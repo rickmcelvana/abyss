@@ -1,0 +1,142 @@
+<!-- public/index.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>abyss</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <a href="#chat-window" class="skip-link">Skip to messages</a>
+
+    <!-- Phase 3 (second hardening round): connection status during a
+         reconnect. Fixed at the top so it's visible no matter which tab
+         or screen is active underneath it. -->
+    <div id="connection-banner" class="hidden" role="status" aria-live="polite">
+        <span id="connection-banner-text"></span>
+    </div>
+
+    <!-- Shared visually-hidden live region for miscellaneous status
+         announcements (call connected/ended, file received, identity
+         verified, etc.) - fed by logSystem() in client.js, so anything
+         already worth a system chat line is also worth announcing. -->
+    <div id="sr-announcer" class="sr-only" role="status" aria-live="polite"></div>
+
+    <div id="app">
+        <!-- Welcome Screen -->
+        <section id="welcome-screen" class="glass-card">
+            <h1>[-tm-]</h1>
+            <p class="subtitle">Enter the abyss.</p>
+            <form id="join-form">
+                <label for="nick" class="sr-only">Nickname, maximum 15 characters</label>
+                <input type="text" autocomplete="off" id="nick" placeholder="Nickname (max 15)" maxlength="15" required>
+                <label for="about" class="sr-only">About you, maximum 15 characters</label>
+                <textarea id="about" autocomplete="off" placeholder="About you (max 15)" maxlength="15" required></textarea>
+                <label for="room-password" class="sr-only">Room password</label>
+                <input type="password" autocomplete="off" id="room-password" placeholder="Room password" class="hidden">
+                <button type="submit">INITIATE</button>
+            </form>
+            <p id="identity-fingerprint-row" class="identity-row hidden">
+                Your device identity: <span id="identity-fingerprint">…</span>
+                <a href="#" id="reset-identity-link">reset</a>
+            </p>
+        </section>
+
+        <!-- Main Chat Interface -->
+        <main id="chat-interface" class="hidden">
+            <div id="sidebar-backdrop" class="hidden"></div>
+            <aside class="sidebar" aria-label="Users in the room">
+                <div class="sidebar-header">
+                    <h3 id="user-list-heading">Users</h3>
+                    <button type="button" id="notify-toggle" aria-label="Enable desktop notifications for messages and calls while this tab isn't focused">🔕</button>
+                </div>
+                <div id="user-list" role="group" aria-labelledby="user-list-heading"></div>
+            </aside>
+
+            <section class="main-content">
+                <button type="button" id="sidebar-toggle" aria-label="Show users list">☰ <span id="sidebar-toggle-count"></span></button>
+                <!-- Voice call status (hidden while idle) -->
+                <div id="call-status-bar" class="hidden">
+                    <span id="call-status-text" role="status" aria-live="polite"></span>
+                    <span id="group-participants" title="Other people currently in this call"></span>
+                    <span id="call-quality"></span>
+                    <span id="safety-code" title="Read this aloud to each other. It must match on both ends - a mismatch means the call may be intercepted."></span>
+                    <button type="button" id="mute-btn" class="hidden">MUTE</button>
+                    <button type="button" id="video-btn" class="hidden">START VIDEO</button>
+                    <button type="button" id="add-to-call-btn" class="hidden" aria-label="Add someone to this call">+ ADD</button>
+                    <button type="button" id="hangup-btn" class="danger">HANG UP</button>
+                </div>
+                <!-- Full per-participant safety code list - only shown once
+                     a call actually has more than the original two people,
+                     since the compact #safety-code above already covers a
+                     plain 1:1 call. -->
+                <div id="call-participants-list" class="hidden" role="group" aria-label="Call participants and safety codes"></div>
+                <!-- Picker for inviting someone into an active call -->
+                <div id="group-invite-picker" class="hidden" role="dialog" aria-modal="true" aria-label="Add someone to the call">
+                    <div class="glass-card call-modal">
+                        <p>Add to call</p>
+                        <div id="group-invite-list"></div>
+                        <div class="call-actions">
+                            <button type="button" id="group-invite-close-btn" class="danger">CLOSE</button>
+                        </div>
+                    </div>
+                </div>
+                <nav class="tabs" id="tab-container" role="tablist" aria-label="Conversations">
+                </nav>
+                <div id="chat-window" class="message-display" role="log" aria-live="polite" aria-relevant="additions" aria-label="Chat messages" tabindex="-1"></div>
+                <footer class="input-area">
+                   <p>send to:  <span id="active-tab-title"></span></p>
+                    <p id="typing-indicator" class="hidden" role="status" aria-live="polite"></p>
+                    <form id="msg-form">
+                        <button type="button" id="attach-file-btn" class="hidden" aria-label="Send a file">📎</button>
+                        <input type="file" id="file-picker" class="hidden" aria-hidden="true" tabindex="-1">
+                        <label for="msg-input" class="sr-only">Message</label>
+                        <input type="text" autocomplete="off" id="msg-input" placeholder="Send message" required>
+                        <button type="submit" id="send-btn">SEND</button>
+                    </form>
+                </footer>
+            </section>
+        </main>
+        <!-- Incoming call modal (hidden until ringing) -->
+        <div id="incoming-call-modal" class="hidden" role="alertdialog" aria-modal="true" aria-labelledby="incoming-call-text">
+            <div class="glass-card call-modal">
+                <p id="incoming-call-text"></p>
+                <div class="call-actions">
+                    <button type="button" id="accept-call-btn">ACCEPT</button>
+                    <button type="button" id="decline-call-btn" class="danger">DECLINE</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Incoming file transfer modal (hidden until offered) -->
+        <div id="incoming-file-modal" class="hidden" role="alertdialog" aria-modal="true" aria-labelledby="incoming-file-text">
+            <div class="glass-card call-modal">
+                <p id="incoming-file-text"></p>
+                <div class="call-actions">
+                    <button type="button" id="accept-file-btn">ACCEPT</button>
+                    <button type="button" id="decline-file-btn" class="danger">DECLINE</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Video panel: hidden until either side has a camera on. Remote
+             video fills the panel; local video is a small muted, mirrored
+             self-view inset in the corner - the standard video-call layout.
+             Covers the original two-person relationship only; anyone added
+             to a group call beyond that gets their own small tile in
+             #extra-video-tiles alongside this panel. -->
+        <div id="video-panel" class="hidden" aria-label="Video call" role="group">
+            <video id="remote-video" autoplay playsinline aria-label="Remote video"></video>
+            <video id="local-video" class="hidden" autoplay playsinline muted aria-label="Your camera preview"></video>
+        </div>
+        <div id="extra-video-tiles" class="hidden" aria-label="Other participants' video" role="group"></div>
+
+        <!-- Remote call audio sink (wired up in Phase 2) -->
+        <audio id="remote-audio" autoplay></audio>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="client.js"></script>
+</body>
+</html>

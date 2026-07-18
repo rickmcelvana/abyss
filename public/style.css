@@ -1,0 +1,1110 @@
+/* public/style.css */
+:root {
+    --bg-color: #000000;
+    --card-bg: #1e1e1f;
+    --text-main: #a0a0a0;
+    --accent: #00f0ff;
+    --glow: 0 0 15px rgba(0, 240, 255, 0.3);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+    background-color: var(--bg-color);
+    color: var(--text-main);
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    height: 100vh;
+    height: 100dvh; /* accounts for mobile browser chrome (address bar) resizing the viewport */
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    overflow: hidden;
+}
+
+/* Glassmorphism */
+.glass-card {
+    background: rgba(30, 30, 31, 0.8);
+    backdrop-filter: blur(20px);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    padding: 3rem;
+    border-radius: 16px;
+    text-align: center;
+    box-shadow: var(--glow);
+}
+
+#welcome-screen h1 {
+    font-size: 3rem;
+    letter-spacing: 8px;
+    color: #fff;
+    margin-bottom: 0.5rem;
+    text-shadow: 0 0 20px var(--accent);
+}
+
+input, textarea {
+    width: 100%;
+    padding: 12px;
+    margin: 10px 0;
+    background: rgba(0,0,0,0.3);
+    border: 1px solid #333;
+    color: white;
+    border-radius: 8px;
+}
+
+button {
+    padding: 12px 24px;
+    background: var(--accent);
+    border: none;
+    border-radius: 8px;
+    font-weight: bold;
+    cursor: pointer;
+    transition: transform 0.2s, box-shadow 0.2s;
+}
+
+button:hover {
+    transform: translateY(-2px);
+    box-shadow: var(--glow);
+}
+
+/* Chat Layout */
+#chat-interface {
+    width: 95vw;
+    height: 85vh;
+    display: grid;
+    grid-template-columns: 260px 1fr;
+    gap: 20px;
+    background: var(--card-bg);
+    border-radius: 20px;
+    padding: 20px;
+}
+
+.hidden { display: none !important; }
+
+/* Mobile sidebar drawer controls - hidden by default (desktop); shown in
+   the mobile breakpoint below. */
+#sidebar-toggle {
+    display: none;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 12px;
+    font-size: 0.85rem;
+    background: transparent;
+    border: 1px solid #333;
+    align-self: flex-start;
+    margin: 10px 10px 0 10px;
+}
+#sidebar-backdrop {
+    display: none;
+}
+
+.sidebar {
+    background: rgba(255,255,255,0.03);
+    border-radius: 12px;
+    padding: 15px;
+}
+
+.user-item {
+    padding: 10px;
+    margin: 5px 0;
+    border-radius: 8px;
+    transition: background 0.3s;
+}
+
+.user-item:hover { background: rgba(255,255,255,0.1); }
+
+.main-content {
+    display: flex;
+    flex-direction: column;
+    border: 1px solid #333;
+    border-radius: 12px;
+    overflow: hidden;
+}
+
+.tabs {
+    display: flex;
+    background: #0a0a0a;
+    padding: 8px;
+    gap: 10px;
+    border-radius: 8px;
+    border: 1px solid #333;
+    overflow-x: auto;
+}
+
+.tab {
+    padding: 8px 16px;
+    border-radius: 6px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all 0.2s ease;
+    border: 1px solid transparent;
+}
+
+.tab:hover {
+    background: rgba(255, 255, 255, 0.05);
+    border-color: #333;
+}
+
+.tab.active {
+    background: var(--accent);
+    color: #000;
+    box-shadow: var(--glow);
+    font-weight: bold;
+}
+
+.message-display {
+    flex: 1;
+    padding: 20px;
+    overflow-y: auto;
+    background: rgba(0,0,0,0.2);
+}
+
+.msg { margin-bottom: 15px; animation: fadeIn 0.3s ease; }
+@keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+
+.input-area { padding: 20px; border-top: 1px solid #333; }
+#msg-form { display: flex; gap: 10px; }
+#msg-input { flex: 1; min-width: 0; }
+
+.tab {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+}
+
+.close-btn {
+    margin-left: 8px;
+    padding: 0 4px;
+    font-size: 14px;
+    opacity: 0.6;
+    transition: opacity 0.2s;
+    background: transparent;
+    border: none;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+}
+
+.close-btn:hover, .close-btn:focus-visible {
+    opacity: 1;
+    color: #ff4d4d;
+    transform: none;
+    box-shadow: none;
+}
+.cyan-text {
+    color: var(--accent);
+}
+
+.tab[data-id="global"] .close-btn,
+.tab[data-id="calls"] .close-btn {
+    display: none;
+}
+
+#active-tab-title {
+    font-weight: bold;
+    color: var(--accent);
+    margin-bottom: 5px;
+/*    display: block; */
+    display: inline-block;
+    white-space: nowrap;
+}
+
+.msg { margin-bottom: 15px; padding: 8px 12px; border-radius: 8px; max-width: 80%; }
+
+.msg.system {
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid #333;
+    max-width: 100%;
+    color: #a0a0a0;
+}
+
+/* Received messages (Opponent) */
+.msg.private {
+    background: rgba(255, 255, 255, 0.05);
+    border-left: 4px solid var(--accent);
+    align-self: flex-start;
+}
+
+/* Sent messages (You) */
+.msg.sent {
+    background: rgba(0, 240, 255, 0.1);
+/*    border: 1px solid var(--accent); */
+ border-left: 4px solid var(--accent);
+/*    margin-left: auto; /* Aligns to the right */
+/*    text-align: right; */
+    text-align: left;
+     margin-right: auto
+}
+
+.msg .nick { font-weight: bold; color: #fff; display: block; margin-bottom: 4px; }
+
+/* call */
+/* Call Action Button */
+.user-item {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+}
+.user-open-btn {
+    flex: 1 1 100%;
+    display: block;
+    text-align: left;
+    background: transparent;
+    border: none;
+    padding: 0;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+}
+.user-open-btn:hover, .user-open-btn:focus-visible {
+    transform: none;
+    box-shadow: none;
+}
+.user-open-btn strong { width: 100%; display: block; }
+.user-open-btn small { display: block; }
+
+.user-item .call-btn {
+    margin-left: auto;
+    padding: 5px 10px;
+    font-size: 0.8rem;
+    color: var(--accent);
+    background: rgba(255, 255, 255, 0.1);
+    border: 1px solid var(--accent);
+    border-radius: 4px;
+}
+
+.user-item .call-btn:hover {
+    background: var(--accent);
+    color: #000;
+}
+
+/* Call Status Indicators */
+.status-calling {
+    color: orange;
+    animation: pulse 1.5s infinite;
+}
+
+@keyframes pulse {
+    0% { opacity: 1; }
+    50% { opacity: 0.5; }
+    100% { opacity: 1; }
+}
+
+/* Call Status Bar */
+#call-status-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 10px 14px;
+    margin: 10px 10px 0 10px;
+    background: rgba(0, 240, 255, 0.06);
+    border: 1px solid var(--accent);
+    border-radius: 8px;
+    box-shadow: var(--glow);
+    color: #fff;
+}
+
+#call-status-bar button {
+    padding: 6px 14px;
+    font-size: 0.8rem;
+}
+
+/* Incoming Call Modal */
+#incoming-call-modal {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.75);
+    backdrop-filter: blur(4px);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 100;
+}
+
+.call-modal {
+    min-width: 300px;
+}
+
+#incoming-call-text {
+    color: #fff;
+    font-size: 1.2rem;
+    animation: pulse 1.5s infinite;
+}
+
+.call-actions {
+    display: flex;
+    gap: 12px;
+    justify-content: center;
+    margin-top: 1.5rem;
+}
+
+/* Destructive actions (decline / hang up) */
+button.danger {
+    background: transparent;
+    color: #ff4d4d;
+    border: 1px solid #ff4d4d;
+}
+
+button.danger:hover {
+    background: #ff4d4d;
+    color: #000;
+    box-shadow: 0 0 15px rgba(255, 77, 77, 0.4);
+}
+
+/* Hide the audio sink element */
+#remote-audio { display: none; }
+
+/* Verbal safety code (short authentication string) */
+#safety-code {
+    margin-left: auto;
+    margin-right: 12px;
+    font-family: 'Courier New', monospace;
+    font-size: 0.85rem;
+    letter-spacing: 2px;
+    color: var(--accent);
+    cursor: help;
+}
+
+/* Connection quality indicator */
+#call-quality {
+    font-size: 0.8rem;
+    letter-spacing: 1px;
+    cursor: help;
+}
+#call-quality.q-good { color: #4dff88; }
+#call-quality.q-fair { color: orange; }
+#call-quality.q-poor { color: #ff4d4d; }
+
+/* Mute toggle */
+#mute-btn {
+    padding: 6px 14px;
+    font-size: 0.8rem;
+    background: transparent;
+    color: var(--accent);
+    border: 1px solid var(--accent);
+}
+#mute-btn:hover {
+    background: var(--accent);
+    color: #000;
+}
+
+/* Phase 6: Calls tab badge (unread missed calls) */
+.tab {
+    position: relative;
+}
+.tab-badge {
+    display: inline-block;
+    margin-left: 6px;
+    min-width: 16px;
+    padding: 0 4px;
+    font-size: 0.7rem;
+    line-height: 16px;
+    text-align: center;
+    background: #ff4d4d;
+    color: #fff;
+    border-radius: 8px;
+    font-weight: bold;
+}
+
+/* Phase 6: Call log rows */
+.call-log-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 14px;
+    margin-bottom: 8px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid #262626;
+    border-radius: 8px;
+}
+
+.call-log-icon {
+    font-size: 1.1rem;
+    width: 22px;
+    text-align: center;
+    color: var(--accent);
+}
+
+.call-log-row.outcome-missed .call-log-icon,
+.call-log-row.outcome-no-answer .call-log-icon,
+.call-log-row.outcome-failed .call-log-icon,
+.call-log-row.outcome-declined .call-log-icon {
+    color: #ff4d4d;
+}
+
+.call-log-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.call-log-nick {
+    font-weight: bold;
+    color: #fff;
+}
+
+.call-log-meta {
+    font-size: 0.8rem;
+    color: #808080;
+    margin-top: 2px;
+}
+
+.call-log-callback {
+    padding: 6px 14px;
+    font-size: 0.8rem;
+}
+
+.call-log-offline {
+    font-size: 0.75rem;
+    color: #606060;
+    padding: 0 6px;
+}
+
+/* Phase 7: identity fingerprint display */
+.identity-row {
+    margin-top: 1rem;
+    font-size: 0.75rem;
+    color: #808080;
+    text-align: center;
+}
+#identity-fingerprint {
+    font-family: 'Courier New', monospace;
+    color: var(--accent);
+    letter-spacing: 1px;
+}
+#reset-identity-link {
+    margin-left: 8px;
+    color: #606060;
+    text-decoration: underline;
+    cursor: pointer;
+}
+#reset-identity-link:hover {
+    color: #ff4d4d;
+}
+
+/* Phase 7: trust warning row (identity key changed) */
+.user-item.trust-warning {
+    display: block;
+    background: rgba(255, 77, 77, 0.08);
+    border: 1px solid #ff4d4d;
+    cursor: default;
+}
+.trust-warning-text {
+    font-weight: bold;
+    color: #ff4d4d;
+    margin-bottom: 4px;
+}
+.trust-warning-detail {
+    font-size: 0.75rem;
+    color: #c0c0c0;
+    margin-bottom: 10px;
+    line-height: 1.4;
+}
+.trust-warning-actions {
+    display: flex;
+    gap: 8px;
+}
+.trust-warning-actions button {
+    padding: 6px 12px;
+    font-size: 0.78rem;
+}
+
+/* Phase 7e: explicit verify toggle + fingerprint reveal */
+.verify-toggle {
+    margin-left: 6px;
+    padding: 4px 8px;
+    font-size: 0.85rem;
+    background: transparent;
+    border: 1px solid #333;
+}
+.verify-toggle:hover {
+    border-color: var(--accent);
+    box-shadow: none;
+    transform: none;
+}
+
+.fingerprint-reveal {
+    width: 100%;
+    margin-top: 8px;
+    padding: 8px 10px;
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid #333;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+.fingerprint-reveal code {
+    font-family: 'Courier New', monospace;
+    font-size: 0.8rem;
+    color: var(--accent);
+    letter-spacing: 1px;
+}
+.fingerprint-reveal button {
+    padding: 4px 10px;
+    font-size: 0.75rem;
+}
+.fingerprint-verified-label {
+    color: #4dff88;
+    font-size: 0.8rem;
+    font-weight: bold;
+}
+
+/* Message signature verification failed - deliberately plain, no content shown */
+.msg.tampered {
+    background: rgba(255, 77, 77, 0.08);
+    border: 1px solid #ff4d4d;
+    color: #ff9999;
+    font-size: 0.85rem;
+    max-width: 100%;
+}
+
+/* Phase 3 (second hardening round): connection status banner */
+#connection-banner {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 200;
+    padding: 8px 16px;
+    text-align: center;
+    font-size: 0.85rem;
+    font-weight: bold;
+    color: #fff;
+}
+
+#connection-banner.reconnecting {
+    background: rgba(255, 165, 0, 0.9);
+    animation: pulse 1.5s infinite;
+}
+
+#connection-banner.lost {
+    background: rgba(255, 77, 77, 0.95);
+}
+
+/* Dim and disable actions that would just fail (or get confusingly
+   buffered by Socket.IO) while the connection is down */
+#chat-interface.offline .input-area,
+#chat-interface.offline .call-btn,
+#chat-interface.offline .verify-toggle {
+    opacity: 0.5;
+    pointer-events: none;
+}
+
+/* Presence dots (active/idle) */
+.presence-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    margin-right: 6px;
+    vertical-align: middle;
+}
+.presence-dot.presence-active {
+    background: #4dff88;
+    box-shadow: 0 0 4px rgba(77, 255, 136, 0.6);
+}
+.presence-dot.presence-idle {
+    background: #555;
+}
+
+/* Typing indicator */
+#typing-indicator {
+    font-size: 0.78rem;
+    color: var(--accent);
+    font-style: italic;
+    margin: 2px 0 6px 0;
+    min-height: 1em;
+}
+
+/* Sidebar header (Users heading + notification toggle) */
+.sidebar-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 10px;
+}
+.sidebar-header h3 { margin: 0; }
+
+#notify-toggle {
+    padding: 4px 8px;
+    font-size: 0.9rem;
+    background: transparent;
+    border: 1px solid #333;
+}
+#notify-toggle.enabled {
+    border-color: var(--accent);
+    color: var(--accent);
+    box-shadow: var(--glow);
+}
+#notify-toggle:hover {
+    transform: none;
+    box-shadow: none;
+    border-color: var(--accent);
+}
+
+/* Video calling: floating panel, bottom-right, remote video with a
+   mirrored local self-view inset in the corner - the standard layout. */
+#video-panel {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    z-index: 150;
+    width: 320px;
+    height: 240px;
+    background: #000;
+    border: 1px solid var(--accent);
+    border-radius: 12px;
+    box-shadow: var(--glow);
+    overflow: hidden;
+}
+
+#remote-video {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    background: #0a0a0a;
+}
+
+#local-video {
+    position: absolute;
+    bottom: 10px;
+    right: 10px;
+    width: 90px;
+    height: 68px;
+    object-fit: cover;
+    border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    transform: scaleX(-1); /* mirror, like every other self-view */
+    background: #111;
+}
+
+/* Extra (group call) participants' video - small tiles beside the main
+   video panel, which stays scoped to the original two-person relationship. */
+#extra-video-tiles {
+    position: fixed;
+    bottom: 20px;
+    right: 350px; /* clears the 320px-wide #video-panel plus a gap */
+    z-index: 150;
+    display: flex;
+    flex-direction: column-reverse;
+    gap: 8px;
+    max-width: 160px;
+}
+.extra-video-tile {
+    position: relative;
+    width: 150px;
+    height: 112px;
+    background: #000;
+    border: 1px solid var(--accent);
+    border-radius: 10px;
+    overflow: hidden;
+}
+.extra-video-tile video {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+.extra-video-tile-label {
+    position: absolute;
+    bottom: 4px;
+    left: 6px;
+    font-size: 0.7rem;
+    color: #fff;
+    text-shadow: 0 0 4px #000;
+}
+
+#video-btn {
+    padding: 6px 14px;
+    font-size: 0.8rem;
+    background: transparent;
+    color: var(--accent);
+    border: 1px solid var(--accent);
+}
+#video-btn:hover {
+    background: var(--accent);
+    color: #000;
+}
+
+/* File transfer: attach button + input form layout */
+#msg-form { align-items: center; }
+#attach-file-btn {
+    padding: 8px 12px;
+    font-size: 1rem;
+    background: transparent;
+    border: 1px solid #333;
+    flex-shrink: 0;
+}
+#attach-file-btn:hover {
+    border-color: var(--accent);
+    box-shadow: none;
+    transform: none;
+}
+
+/* File transfer message bubble */
+.msg.file-transfer {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid #333;
+    max-width: 320px;
+}
+.msg.file-transfer.status-complete { border-color: rgba(77, 255, 136, 0.4); }
+.msg.file-transfer.status-failed,
+.msg.file-transfer.status-declined { border-color: rgba(255, 77, 77, 0.4); }
+
+.file-icon { font-size: 1.4rem; }
+
+.file-info { flex: 1; min-width: 0; }
+
+.file-name {
+    font-weight: bold;
+    color: #fff;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.file-meta {
+    font-size: 0.78rem;
+    color: #909090;
+    margin-top: 2px;
+}
+
+.file-progress-wrap {
+    margin-top: 6px;
+    height: 5px;
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 3px;
+    overflow: hidden;
+}
+.file-progress-bar {
+    height: 100%;
+    background: var(--accent);
+    transition: width 0.15s ease;
+}
+
+.file-download-link {
+    display: inline-block;
+    margin-top: 6px;
+    padding: 4px 10px;
+    font-size: 0.78rem;
+    background: var(--accent);
+    color: #000;
+    border-radius: 4px;
+    font-weight: bold;
+    text-decoration: none;
+}
+.file-download-link:hover {
+    box-shadow: var(--glow);
+}
+
+.file-cancel-link {
+    display: inline-block;
+    margin-top: 6px;
+    margin-left: 6px;
+    padding: 4px 10px;
+    font-size: 0.78rem;
+    background: transparent;
+    color: #ff9999;
+    border: 1px solid #ff4d4d;
+    border-radius: 4px;
+}
+.file-cancel-link:hover {
+    background: #ff4d4d;
+    color: #000;
+    box-shadow: none;
+    transform: none;
+}
+
+/* ============================================================
+   Real mobile/responsive layout. One main breakpoint (≤768px:
+   phones and small tablets), with a couple of finer adjustments
+   below 420px for the narrowest phones.
+   ============================================================ */
+@media screen and (max-width: 768px) {
+    body {
+        align-items: stretch;
+        justify-content: stretch;
+    }
+
+    #welcome-screen {
+        width: 90vw;
+        max-width: 420px;
+        padding: 2rem 1.5rem;
+        margin: auto;
+    }
+    #welcome-screen h1 {
+        font-size: 2.1rem;
+        letter-spacing: 5px;
+    }
+
+    #chat-interface {
+        width: 100vw;
+        height: 100vh;
+        height: 100dvh;
+        border-radius: 0;
+        padding: 0;
+        gap: 0;
+        grid-template-columns: 1fr; /* the sidebar becomes an overlay, not a column */
+    }
+    .main-content {
+        border: none;
+        border-radius: 0;
+    }
+
+    /* Sidebar becomes a slide-in drawer rather than a permanent 260px
+       column, which would eat the entire width of a phone screen. */
+    .sidebar {
+        position: fixed;
+        top: 0;
+        left: 0;
+        bottom: 0;
+        width: min(85vw, 320px);
+        z-index: 220;
+        border-radius: 0;
+        transform: translateX(-100%);
+        transition: transform 0.25s ease;
+        overflow-y: auto;
+    }
+    .sidebar.open {
+        transform: translateX(0);
+    }
+    #sidebar-backdrop {
+        display: block;
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.6);
+        z-index: 210;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.25s ease;
+    }
+    #sidebar-backdrop.open {
+        opacity: 1;
+        pointer-events: auto;
+    }
+    #sidebar-toggle {
+        display: inline-flex;
+    }
+
+    /* Call status bar: let it wrap onto a second line instead of
+       overflowing or squeezing six controls into one row */
+    #call-status-bar {
+        flex-wrap: wrap;
+        row-gap: 8px;
+        margin: 8px 8px 0 8px;
+    }
+    #safety-code {
+        margin-right: 0;
+        flex-basis: 100%;
+        order: 5;
+        text-align: center;
+    }
+
+    /* Tabs and touch targets - a bit more breathing room for fingers */
+    .tab {
+        padding: 10px 16px;
+    }
+    #call-status-bar button,
+    #mute-btn, #video-btn, #hangup-btn {
+        padding: 9px 14px;
+        font-size: 0.85rem;
+    }
+
+    .input-area {
+        padding: 12px;
+    }
+    #attach-file-btn, #send-btn {
+        padding: 10px 14px;
+    }
+
+    /* Video panel: a fixed 320x240 box would cover most of a phone
+       screen - scale it down and move it clear of the message input. */
+    #video-panel {
+        width: min(45vw, 180px);
+        height: min(34vw, 135px);
+        bottom: auto;
+        top: 70px;
+        right: 10px;
+    }
+    #local-video {
+        width: 40%;
+        height: 40%;
+        bottom: 6px;
+        right: 6px;
+    }
+    #extra-video-tiles {
+        bottom: auto;
+        top: 70px;
+        right: min(50vw, 200px); /* clears the smaller mobile video-panel */
+        flex-direction: row;
+        flex-wrap: wrap;
+        max-width: 40vw;
+    }
+    .extra-video-tile {
+        width: min(30vw, 110px);
+        height: min(22vw, 82px);
+    }
+
+    /* Modals: cap width relative to the viewport instead of a bare
+       min-width that could force horizontal scrolling */
+    .call-modal {
+        min-width: 0;
+        width: 88vw;
+        max-width: 360px;
+        max-height: 85vh;
+        overflow-y: auto;
+        padding: 1.75rem 1.25rem;
+    }
+
+    .file-transfer {
+        max-width: 100%;
+    }
+}
+
+@media screen and (max-width: 420px) {
+    #welcome-screen h1 {
+        font-size: 1.7rem;
+        letter-spacing: 3px;
+    }
+    .glass-card {
+        padding: 1.5rem 1.1rem;
+    }
+    .sidebar {
+        width: 90vw;
+    }
+    #call-status-text {
+        font-size: 0.85rem;
+    }
+}
+
+/* --- Accessibility pass --- */
+
+/* Visually hidden but still available to screen readers (standard pattern) */
+.sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
+
+/* Skip link: hidden until keyboard-focused, then jumps straight to the
+   message log so keyboard users don't have to tab through the whole
+   sidebar and call bar on every visit. */
+.skip-link {
+    position: absolute;
+    top: -100px;
+    left: 8px;
+    z-index: 999;
+    padding: 10px 16px;
+    background: var(--accent);
+    color: #000;
+    font-weight: bold;
+    border-radius: 0 0 8px 8px;
+    text-decoration: none;
+    transition: top 0.15s ease;
+}
+.skip-link:focus {
+    top: 0;
+}
+
+/* Visible focus indicator on every interactive element. The browser
+   default outline gets lost against this dark theme, so we replace it
+   with something that actually shows up - but only for keyboard focus
+   (:focus-visible), not on every mouse click, which is the standard UX
+   expectation. */
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    box-shadow: var(--glow);
+}
+.tab:focus-visible,
+.user-open-btn:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+}
+
+/* Group calls */
+#group-participants {
+    font-size: 0.8rem;
+    color: #a0a0a0;
+    font-style: italic;
+}
+
+#call-participants-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin: 0 10px 8px 10px;
+    padding: 8px 12px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid #333;
+    border-radius: 8px;
+}
+.call-participant-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    font-size: 0.8rem;
+}
+.call-participant-name {
+    color: #fff;
+    font-weight: bold;
+}
+.call-participant-safety {
+    color: var(--accent);
+    font-variant-numeric: tabular-nums;
+}
+
+#add-to-call-btn {
+    padding: 6px 14px;
+    font-size: 0.8rem;
+    background: transparent;
+    color: var(--accent);
+    border: 1px solid var(--accent);
+}
+#add-to-call-btn:hover {
+    background: var(--accent);
+    color: #000;
+}
+
+#group-invite-picker {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.75);
+    backdrop-filter: blur(4px);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 120;
+}
+#group-invite-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin: 1rem 0;
+    max-height: 40vh;
+    overflow-y: auto;
+}
+.group-invite-option {
+    padding: 10px 16px;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid #333;
+    color: #fff;
+    text-align: left;
+}
+.group-invite-option:hover {
+    border-color: var(--accent);
+    box-shadow: none;
+}
