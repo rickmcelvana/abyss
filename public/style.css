@@ -855,18 +855,28 @@ button.danger:hover {
     }
 
     /* Sidebar becomes a slide-in drawer rather than a permanent 260px
-       column, which would eat the entire width of a phone screen. */
+       column, which would eat the entire width of a phone screen.
+       It's dropped below the toggle button / tabs header (instead of
+       starting at the very top) so it (a) never covers the ☰ toggle -
+       letting the user tap it again to close the drawer - and (b)
+       overlaps the tab bar / message area instead of the plain page
+       background, which gives the glowing accent border something
+       lighter to stand out against. */
     .sidebar {
         position: fixed;
-        top: 0;
+        top: 100px;
         left: 0;
         bottom: 0;
         width: min(85vw, 320px);
         z-index: 220;
-        border-radius: 0;
+        border-radius: 0 14px 0 0;
         transform: translateX(-100%);
         transition: transform 0.25s ease;
         overflow-y: auto;
+        background: rgba(0, 240, 255, 0.05);
+        border-top: 1px solid var(--accent);
+        border-right: 1px solid var(--accent);
+        box-shadow: var(--glow);
     }
     .sidebar.open {
         transform: translateX(0);
@@ -877,7 +887,7 @@ button.danger:hover {
         inset: 0;
         background: rgba(0, 0, 0, 0.6);
         z-index: 210;
-        opacity: 0;
+        opacity: 50;
         pointer-events: none;
         transition: opacity 0.25s ease;
     }
@@ -887,6 +897,11 @@ button.danger:hover {
     }
     #sidebar-toggle {
         display: inline-flex;
+        /* Keep the toggle clickable above the backdrop (z-index 210)
+           even while the drawer is open, since the drawer itself no
+           longer sits on top of it. */
+        position: relative;
+        z-index: 230;
     }
 
     /* Call status bar: let it wrap onto a second line instead of
