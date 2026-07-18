@@ -764,7 +764,7 @@ const PORT = process.env.PORT || 3000;
 // 127.0.0.1, remote users must reach this app through a TLS-terminating
 // tunnel or reverse proxy (nginx + certbot, cloudflared, ngrok, etc.).
 server.listen(PORT, '127.0.0.1', () => {
-    console.log(`Abyss activated on port ${PORT}`);
+    console.log(`Abyss.Tunnel activated on port ${PORT}`);
     console.log(`> Ring timeout: ${RING_TIMEOUT_MS}ms`);
     console.log(`> Room password: ${ROOM_PASSWORD_HASH ? 'required' : 'not required'}`);
     console.log(`> Max connections per IP: ${MAX_CONNECTIONS_PER_IP}`);

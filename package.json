@@ -1,0 +1,20 @@
+{
+  "name": "Abyss.Tunnel",
+  "version": "1.1.8",
+  "description": "A small, ephemeral, end-to-end encrypted chat room with encrypted voice calls. No accounts, no database, no message history on disk — pick a nickname, talk, close the tab, it's gone.",
+  "main": "server.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "GPL-3.0-or-later",
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "express-rate-limit": "^8.6.0",
+    "helmet": "^8.3.0",
+    "socket.io": "^4.8.3"
+  }
+}
