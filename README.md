@@ -33,7 +33,7 @@ Built as a single flat chat room (`#twistedminds`) for up to 20 concurrent users
 ## Setup
 
 ```bash
-git clone <this-repo>
+git clone https://github.com/rickmcelvana/abyss.git
 cd abyss
 npm install
 npm start
