@@ -1,0 +1,11 @@
+# opencode config
+opencode.json
+
+# node_modules and dependency directories
+node_modules/
+vendor/
+
+# build artifacts
+dist/
+build/
+*.log
