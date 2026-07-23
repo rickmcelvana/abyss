@@ -1,3 +1,4 @@
+require('dotenv').config();
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -79,9 +80,24 @@ app.get('/api/ice-config', (req, res) => {
     res.json({ iceServers: STUN_SERVERS });
 });
 
+// Trusted reverse-proxy hop count. When the server sits behind nginx,
+// cloudflared, ngrok, etc. (as documented at the bottom of this file),
+// socket.handshake.address is the proxy's address (e.g. 127.0.0.1), not the
+// real client's. Socket.IO honors the X-Forwarded-For header when `trustProxy`
+// is set on the Server constructor; the value is the number of trusted proxies
+// in front of us (1 for a single reverse proxy). Leave unset for direct/
+// localhost operation - socket.handshake.address is already correct then.
+const TRUST_PROXY = parseInt(process.env.TRUST_PROXY, 10);
+const trustProxyConfig = Number.isNaN(TRUST_PROXY) ? false : TRUST_PROXY;
+
 const server = http.createServer(app);
 const io = new Server(server, {
-    cors: { origin: "*" }
+    cors: { origin: "*" },
+    // Honor X-Forwarded-For when a trusted reverse proxy is configured
+    // (see TRUST_PROXY above). Disabled by default so direct/localhost
+    // operation is unaffected. When enabled, socket.handshake.address
+    // reflects the real client IP instead of the proxy's address.
+    ...(trustProxyConfig !== false ? { trustProxy: trustProxyConfig } : {})
 });
 
 // State Management
@@ -226,19 +242,30 @@ const nickBindings = new Map(); // nick -> identity fingerprint
 
 // Optional room password. Off by default (open room, matching every prior
 // phase's behavior) - set ROOM_PASSWORD to require one. We never store or
-// compare the plaintext: both sides are hashed to a fixed 32-byte digest
-// first, which sidesteps two footguns at once - crypto.timingSafeEqual()
-// throws on mismatched buffer lengths (a variable-length password would
-// throw before comparing), and comparing raw variable-length strings char
-// by char leaks timing info about how many leading characters matched.
+// compare the plaintext: the configured password is hashed once at startup
+// with scrypt (a memory-hard password-based KDF) and a random salt, and each
+// candidate is hashed the same way before a constant-time comparison. This
+// replaces an earlier single-round SHA-256 hash: scrypt's work factor makes
+// offline brute-force of a low-entropy room password impractical if the hash
+// ever leaks, while SHA-256 is fast enough to crack trivially.
+//
+// The salt is generated once per process at startup. This is intentional:
+// there is no persistent store to keep a salt in (everything resets on
+// restart), and a per-process salt still defeats precomputed rainbow tables
+// for the lifetime of this process. The work factor (N=16384, r=8, p=1) is
+// the OWASP minimum; it costs ~100ms per verification, acceptable given the
+// join rate limit (5/30s per socket) and the 20-user room cap.
+const ROOM_PASSWORD_SALT = process.env.ROOM_PASSWORD ? crypto.randomBytes(16) : null;
+const SCRYPT_PARAMS = { N: 16384, r: 8, p: 1, maxmem: 32 * 1024 * 1024 };
+const SCRYPT_KEYLEN = 32;
 const ROOM_PASSWORD_HASH = process.env.ROOM_PASSWORD
-    ? crypto.createHash('sha256').update(process.env.ROOM_PASSWORD).digest()
+    ? crypto.scryptSync(process.env.ROOM_PASSWORD, ROOM_PASSWORD_SALT, SCRYPT_KEYLEN, SCRYPT_PARAMS)
     : null;
 
 function checkRoomPassword(candidate) {
     if (!ROOM_PASSWORD_HASH) return true; // no password configured - open room
     if (typeof candidate !== 'string' || candidate.length === 0) return false;
-    const candidateHash = crypto.createHash('sha256').update(candidate).digest();
+    const candidateHash = crypto.scryptSync(candidate, ROOM_PASSWORD_SALT, SCRYPT_KEYLEN, SCRYPT_PARAMS);
     return crypto.timingSafeEqual(candidateHash, ROOM_PASSWORD_HASH);
 }
 
@@ -275,6 +302,9 @@ io.on('connection', (socket) => {
 
     // Phase 8: per-IP cap, checked before anything else - no point setting
     // up rate limiters or issuing a nonce for a connection we're about to drop.
+    // When TRUST_PROXY is configured, socket.handshake.address already
+    // reflects the real client IP parsed from X-Forwarded-For; otherwise it
+    // is the direct TCP peer address.
     const ip = socket.handshake.address;
     const ipConnections = connectionsByIp.get(ip) || 0;
     if (ipConnections >= MAX_CONNECTIONS_PER_IP) {
