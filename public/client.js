@@ -866,6 +866,10 @@ function updateCallsTabBadge() {
         state.trustStatus[user.nick] = trust;
         state.phonebook[user.nick] = { publicKey: user.publicKey, id: user.id, identityKey: user.identityKey, presence: user.presence };
 
+        // Keep lastUserList in sync so trust-action re-renders (Mark
+        // Verified / Trust new key) don't drop the newcomer from the sidebar.
+        state.lastUserList.push(user);
+
         // Incrementally add the new user row to the sidebar without
         // rebuilding everything. Handles new, ok, and changed trust states.
         const isSelf = user.nick === state.myNick;
@@ -946,6 +950,10 @@ function updateCallsTabBadge() {
             delete state.typing[tabId][nick];
         }
 
+        // Keep lastUserList in sync so trust-action re-renders don't
+        // revive the departed user as a ghost row.
+        state.lastUserList = state.lastUserList.filter(u => u.nick !== nick);
+
         const pmTabId = `pm_${nick}`;
         const row = userListElem.querySelector(`.user-item[data-nick="${CSS.escape(nick)}"]`);
         if (row) row.remove();
@@ -953,7 +961,7 @@ function updateCallsTabBadge() {
 
         // If the departed nick owned the active tab, switch to global
         if (state.currentTabId === pmTabId) {
-            setActiveTab(globalTabId);
+            setActiveTab('global');
         }
     });
 

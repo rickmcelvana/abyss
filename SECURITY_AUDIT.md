@@ -84,7 +84,7 @@ Findings are grouped by severity. Each item has a Status field updated as work i
 ### 11. `io.emit('user_list', ...)` on every join/disconnect
 - **Location:** `server.js:517-535,661-663` (now `server.js:494-497`).
 - **Impact:** Previously broadcast the full user list (with identity keys) to all sockets on every join and disconnect. Incremental events reduce per-event payload from O(n) to O(1).
-- **Fix:** Changed join to send full `user_list` only to the *new* client, and sends a lightweight `user_joined` (single user entry) to all others. Changed disconnect to send `user_left` (just id+nick) to remaining clients. Client now has `user_joined` handler that builds and appends the row incrementally, and `user_left` handler that removes it.
+- **Fix:** Changed join to send full `user_list` only to the *new* client, and sends a lightweight `user_joined` (single user entry) to all others. Changed disconnect to send `user_left` (just id+nick) to remaining clients. Client now has `user_joined` handler that builds and appends the row incrementally, and `user_left` handler that removes it. Both handlers also keep `state.lastUserList` in sync so trust-action re-renders (Mark Verified / Trust new key) reflect incremental membership changes.
 - **Status:** DONE
 
 ### 12. Synchronous ECDSA verification on the event loop
@@ -155,6 +155,23 @@ Findings are grouped by severity. Each item has a Status field updated as work i
 - Added `uint8ArrayToB64(buf)` helper that converts typed arrays to base64 using 8KB chunks via `String.fromCharCode.apply`, eliminating call stack overflow risk on large buffers.
 - Replaced all 6 spread call sites: `exportIdentityPublicKeyB64`, `signWithIdentity`, `exportPublicKey`, `hybridEncrypt` (3 calls in one return), and the join signature.
 - All tests pass: `test-identity-crypto.js`, `test-access-control.js` (9/9).
+
+### 2026-07-23 — Fix #9 & #10 (Bugfixes): incremental event handler audit fixes
+Two bugs found during audit of the `user_joined`/`user_left` handlers (commits 787cadb, 09a11b5) and fixed:
+
+**#9 — `state.lastUserList` went stale after incremental events.**
+- The `user_list` handler sets `state.lastUserList`, but `user_joined`/`user_left` did not update it.
+- Two trust-action callbacks (`renderUserList(state.lastUserList)` at the "Mark Verified" and "Trust new key" buttons) re-render the sidebar from this snapshot.
+- After a join/leave, clicking either button would drop newcomers or revive departed users as ghost rows.
+- Fix: `user_joined` now appends the new entry to `state.lastUserList`; `user_left` filters the departed nick out of it.
+
+**#10 — `globalTabId` undefined in `user_left` (ReferenceError).**
+- Commit 09a11b5 introduced `setActiveTab(globalTabId)` but `globalTabId` was never declared. Every other call site uses the string literal `'global'`.
+- When the active PM tab's peer disconnected, the `user_left` handler threw a `ReferenceError` and the tab switch silently failed, leaving the user on an orphaned PM tab.
+- Fix: replaced `globalTabId` with `'global'`.
+
+- All 3 test suites pass: `test-turn-hmac.js`, `test-identity-crypto.js`, `test-access-control.js` (9/9).
+- Updated item #11 to note the `lastUserList` sync fix.
 
 ### 2026-07-22 — Fix #1 (Critical): dotenv loaded at startup
 - Added `require('dotenv').config()` as the first line of `server.js`, before any `process.env` reads.
