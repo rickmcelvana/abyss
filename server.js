@@ -247,7 +247,14 @@ function fingerprintOf(identityKeyB64) {
 // by a given identity, only that identity may use it again for as long as
 // this server process runs (consistent with the app's everything-resets-
 // on-restart design - see the README for the tradeoff this implies).
-const nickBindings = new Map(); // nick -> identity fingerprint
+//
+// Bounded: a long-lived process with high nick churn would leak memory
+// indefinitely otherwise. The cap is generous relative to MAX_USERS (20)
+// - in practice the map never grows past the number of distinct nicks
+// that have ever joined, but a hard ceiling protects against pathological
+// cases. When the cap is reached, the oldest entries are evicted (FIFO).
+const MAX_NICK_BINDINGS = 1000;
+const nickBindings = new Map(); // nick -> identity fingerprint (insertion-ordered)
 
 // --- Phase 8: access control & abuse hardening ---
 
@@ -307,6 +314,39 @@ function createLimiter(max, windowMs) {
         return count <= max;
     };
 }
+
+// Per-IP connection-rate limit. The concurrent cap above stops someone from
+// holding many sockets at once; this stops them from rapidly cycling
+// connections (connect/disconnect/reconnect) to dodge the concurrent cap or
+// to burn server resources allocating nonces, rate-limiter closures, and Map
+// entries for sockets that never join. Generous enough for a real user
+// reloading a tab or recovering a flaky connection, but catches a script
+// spinning up sockets in a tight loop.
+const MAX_CONNECT_RATE_PER_IP = parseInt(process.env.MAX_CONNECT_RATE_PER_IP, 10) || 20;
+const CONNECT_RATE_WINDOW_MS = parseInt(process.env.CONNECT_RATE_WINDOW_MS, 10) || 60000;
+const connectRateByIp = new Map(); // ip -> { count, windowStart }
+
+function connectRateOk(ip) {
+    const now = Date.now();
+    let entry = connectRateByIp.get(ip);
+    if (!entry || now - entry.windowStart >= CONNECT_RATE_WINDOW_MS) {
+        entry = { count: 0, windowStart: now };
+        connectRateByIp.set(ip, entry);
+    }
+    entry.count++;
+    return entry.count <= MAX_CONNECT_RATE_PER_IP;
+}
+
+// Socket.IO middleware: runs before the 'connection' handler, so a rejected
+// handshake never even enters the connection lifecycle. The error message
+// reaches the client as a connect_error.
+io.use((socket, next) => {
+    const ip = socket.handshake.address;
+    if (!connectRateOk(ip)) {
+        return next(new Error('Too many connections from your network. Try again shortly.'));
+    }
+    next();
+});
 
 io.on('connection', (socket) => {
     console.log(`> New connection request: ${socket.id}`);
@@ -379,6 +419,14 @@ io.on('connection', (socket) => {
         }
 
         // 1. Validation
+        // Trim whitespace first - a nick of "   " or one padded with spaces
+        // would otherwise pass the length check and enable impersonation via
+        // visually identical nicks. The client trims too (client.js), but the
+        // server is the trust boundary.
+        if (typeof nick !== 'string') nick = '';
+        if (typeof about !== 'string') about = '';
+        nick = nick.trim();
+        about = about.trim();
         if (!nick || nick.length > 15 || !about || about.length > 15) {
             return socket.emit('error', 'Nick/About must be 1-15 chars.');
         }
@@ -417,6 +465,14 @@ io.on('connection', (socket) => {
         // 4. Success State
         users.set(socket.id, { nick, about, publicKey, identityKey, presence: 'active' });
         nickBindings.set(nick, fingerprint);
+        // Evict oldest entry if the binding cap is reached. Map iteration is
+        // insertion-ordered, so the first key is the oldest. Only evicts when
+        // this set actually grew the map (reconnecting with the same nick
+        // just overwrites the existing entry without changing its size).
+        if (nickBindings.size > MAX_NICK_BINDINGS) {
+            const oldest = nickBindings.keys().next().value;
+            nickBindings.delete(oldest);
+        }
 
         // Notify others of the new user list (with their ids for routing).
         // identityKey rides along here so every client can pin/verify it.
@@ -527,7 +583,14 @@ io.on('connection', (socket) => {
     socket.on('disconnect', () => {
         // Phase 8: release this connection's slot in the per-IP cap
         const remaining = (connectionsByIp.get(ip) || 1) - 1;
-        if (remaining <= 0) connectionsByIp.delete(ip); else connectionsByIp.set(ip, remaining);
+        if (remaining <= 0) {
+            connectionsByIp.delete(ip);
+            // No more open connections from this IP - drop the connection-rate
+            // entry too, so a reconnecting user starts a fresh window.
+            connectRateByIp.delete(ip);
+        } else {
+            connectionsByIp.set(ip, remaining);
+        }
 
         // If they were mid-call (or mid-ring), tell everyone they were
         // connected to - could be several people now, in a group call
@@ -812,4 +875,7 @@ server.listen(PORT, '127.0.0.1', () => {
     console.log(`> Ring timeout: ${RING_TIMEOUT_MS}ms`);
     console.log(`> Room password: ${ROOM_PASSWORD_HASH ? 'required' : 'not required'}`);
     console.log(`> Max connections per IP: ${MAX_CONNECTIONS_PER_IP}`);
+    console.log(`> Connect rate per IP: ${MAX_CONNECT_RATE_PER_IP}/${CONNECT_RATE_WINDOW_MS}ms`);
+    console.log(`> CORS origin: ${ALLOWED_ORIGIN}`);
+    console.log(`> Proxy trust: ${trustProxyConfig !== false ? trustProxyConfig : 'off'}`);
 });

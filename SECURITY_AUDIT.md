@@ -51,13 +51,13 @@ Findings are grouped by severity. Each item has a Status field updated as work i
 - **Location:** `express-rate-limit` at `server.js:30-35` only covers `/api/`. Socket.IO handshake is an HTTP upgrade with no Express-level limiter.
 - **Impact:** Per-IP cap and per-socket event limiters mitigate, but a distributed attacker bypasses the IP cap; each unjoined socket still allocates a nonce, rate-limiter closures, and Map entries.
 - **Fix:** Document the existing per-IP cap as the connection-rate defense; consider a Socket.IO `use()` middleware for connection-level throttling if needed.
-- **Status:** TODO
+- **Status:** DONE
 
 ### 7. Unbounded resource growth in `nickBindings`
 - **Location:** `server.js:223`. Never pruned.
 - **Impact:** For a long-lived process with high nick churn, this leaks memory.
 - **Fix:** Add a TTL or LRU cap, or accept it given the "resets on restart" design.
-- **Status:** TODO
+- **Status:** DONE
 
 ### 8. `publicKey` (RSA session key) has no size/format validation
 - **Location:** `server.js:341-349` validates `identityKey` and `signature` blobs but not `publicKey`.
@@ -69,7 +69,7 @@ Findings are grouped by severity. Each item has a Status field updated as work i
 - **Location:** `server.js:341` checks `!nick` and `nick.length > 15` but a nick of `"   "` (spaces) or zero-width characters passes. Client trims (`client.js:647`) but the server is the trust boundary.
 - **Impact:** Homoglyph/whitespace nicks enable impersonation.
 - **Fix:** Trim and reject empty-after-trim; optionally normalize Unicode.
-- **Status:** TODO
+- **Status:** DONE
 
 ### 10. Replay window of 5 minutes for signed messages
 - **Location:** `server.js:157,428-430`. A captured signed message can be re-emitted for ~5 minutes and the server will accept it (producing a duplicate).
@@ -170,3 +170,26 @@ Findings are grouped by severity. Each item has a Status field updated as work i
 - Reuses the existing `MAX_KEY_BLOB` (2000 chars) constant — generous for RSA-2048 SPKI base64 (~392 chars) but blocks arbitrarily large payloads.
 - Error message: `"Missing or malformed session public key."` — distinct from the identity key error so the failure is diagnosable.
 - Verified: `test-access-control.js` — all 9 tests pass (existing tests send a dummy `"x"` publicKey which passes the `> 0` length check; a missing or oversized key is now rejected before signature verification).
+
+### 2026-07-22 — Fix #6 (Medium): Socket.IO connection-rate limiting
+- Added `io.use()` middleware that rate-limits connection handshakes per IP before the `connection` handler runs.
+- New env vars: `MAX_CONNECT_RATE_PER_IP` (default 20) and `CONNECT_RATE_WINDOW_MS` (default 60000).
+- A rejected handshake returns an error to the client as `connect_error` — no nonce, rate-limiter closures, or Map entries are allocated.
+- The `connectRateByIp` Map is pruned in the `disconnect` handler: when an IP's last open connection closes, its rate-limit entry is dropped so a legitimately reconnecting user starts a fresh window.
+- Updated startup log to print the connect-rate config; updated `AGENTS.md`.
+- Verified: `test-access-control.js` — all 9 tests pass.
+
+### 2026-07-22 — Fix #7 (Medium): bounded nickBindings
+- Added `MAX_NICK_BINDINGS = 1000` constant and FIFO eviction when the cap is exceeded.
+- `Map.keys().next().value` gives the oldest insertion-ordered key; `nickBindings.delete(oldest)` evicts it.
+- Only evicts when a `set()` actually grew the map (reconnecting with the same nick overwrites without changing size).
+- Updated the comment block to document the cap and the rationale.
+- Updated `AGENTS.md` Gotchas to note the cap.
+- Verified: `test-access-control.js` — all 9 tests pass.
+
+### 2026-07-22 — Fix #9 (Medium): server-side nick/about trimming
+- Added `.trim()` for both `nick` and `about` in the `join` handler, before the length/empty check.
+- Type-guarded: coerces non-string `nick`/`about` to empty strings so the validation reject path handles them cleanly.
+- A nick of `"   "` or one padded with zero-width spaces is now rejected as empty after trim, preventing impersonation via visually identical nicks.
+- Client already trims (`client.js`), but the server is the trust boundary — this closes the gap.
+- Verified: `test-access-control.js` — all 9 tests pass.
