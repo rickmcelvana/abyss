@@ -189,16 +189,15 @@ const RING_TIMEOUT_MS = parseInt(process.env.RING_TIMEOUT_MS, 10) || 30000; // P
 // older than 5 minutes, but within that window a captured signed payload can
 // still be re-emitted and the server will accept it (producing a duplicate
 // message or a spurious file-transfer signal). This cache closes that gap:
-// every verified signature is remembered for the duration of the skew
-// window, and a second arrival of the same signature from the same socket
-// is dropped as a replay.
+// every verified signature is remembered for the lifetime of the socket,
+// and a second arrival of the same signature from the same socket is
+// dropped as a replay.
 //
 // Scoped per socket id so disconnect cleanup is automatic (the entry and its
-// Set of seen signatures are GC'd when the socket's closure goes away).
-// Entries are pruned lazily on each check - any signature older than the
-// skew window is evicted, so the Set never grows past the number of distinct
-// messages a single socket sends in 5 minutes (bounded by the message rate
-// limit of 15/10s = at most ~450 entries, in practice far fewer).
+// Set of seen signatures are GC'd when the socket's closure goes away). The
+// Set is never explicitly pruned, but is bounded by the per-socket message
+// rate limit (15/10s = at most ~450 entries in the 5-minute window, in
+// practice far fewer), so it never grows without limit.
 const replayCache = new Map(); // socketId -> Set<signature>
 
 function isReplay(socketId, signature) {
@@ -207,16 +206,12 @@ function isReplay(socketId, signature) {
     return seen.has(signature);
 }
 
-/** Records a signature and prunes stale entries. Call only AFTER verification passes. */
-function rememberSignature(socketId, signature, timestamp) {
+/** Records a signature after verification passes. Call only AFTER
+    isReplay() returns false. The Set is bounded by the per-socket rate
+    limit and cleaned up on disconnect, so no per-entry pruning is needed. */
+function rememberSignature(socketId, signature) {
     let seen = replayCache.get(socketId);
     if (!seen) { seen = new Set(); replayCache.set(socketId, seen); }
-    // Lazy prune: drop signatures whose timestamps are outside the current
-    // skew window. We don't store per-signature timestamps alongside the Set
-    // (that would double the memory), so we rely on the caller having already
-    // passed the skew check - by definition anything in the Set is still within
-    // the window until the NEXT call rolls the window forward. A full prune
-    // isn't needed; the Set is bounded by the rate limit as noted above.
     seen.add(signature);
 }
 
@@ -587,7 +582,7 @@ io.on('connection', (socket) => {
             console.log(`> Rejected replayed message from ${user.nick}`);
             return;
         }
-        rememberSignature(socket.id, signature, timestamp);
+        rememberSignature(socket.id, signature);
 
         if (isPrivate && recipientId) {
             io.to(recipientId).emit('private_message', {
@@ -876,7 +871,7 @@ socket.on('file_offer', ({ recipientId, transferId, offer, timestamp, signature 
     if (Math.abs(Date.now() - timestamp) > MESSAGE_TIMESTAMP_SKEW_MS) return;
     if (!verifyStringSignature(sender.identityKey, `${timestamp}:${offer}`, signature)) return;
     if (isReplay(socket.id, signature)) return;
-    rememberSignature(socket.id, signature, timestamp);
+    rememberSignature(socket.id, signature);
 
     io.to(recipientId).emit('file_offer', { senderId: socket.id, transferId, offer, timestamp, signature });
 });
@@ -890,7 +885,7 @@ socket.on('file_answer', ({ recipientId, transferId, answer, timestamp, signatur
     if (Math.abs(Date.now() - timestamp) > MESSAGE_TIMESTAMP_SKEW_MS) return;
     if (!verifyStringSignature(sender.identityKey, `${timestamp}:${answer}`, signature)) return;
     if (isReplay(socket.id, signature)) return;
-    rememberSignature(socket.id, signature, timestamp);
+    rememberSignature(socket.id, signature);
 
     io.to(recipientId).emit('file_answer', { senderId: socket.id, transferId, answer, timestamp, signature });
 });

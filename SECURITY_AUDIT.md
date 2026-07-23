@@ -156,6 +156,12 @@ Findings are grouped by severity. Each item has a Status field updated as work i
 - Replaced all 6 spread call sites: `exportIdentityPublicKeyB64`, `signWithIdentity`, `exportPublicKey`, `hybridEncrypt` (3 calls in one return), and the join signature.
 - All tests pass: `test-identity-crypto.js`, `test-access-control.js` (9/9).
 
+### 2026-07-23 — Fix #11 (Cleanup): replay cache `rememberSignature` dead parameter removed
+- `rememberSignature(socketId, signature, timestamp)` accepted a `timestamp` parameter it never used. The comment described a "lazy prune" that never actually ran. Removed the parameter from the function and all 3 call sites (`message`, `file_offer`, `file_answer`).
+- Rewrote the module comment to accurately describe the bounding strategy (rate-limit-bounded Set, disconnect cleanup) instead of claiming per-entry pruning.
+- Added trailing newline to `test-replay-cache.js`.
+- All 4 test suites pass: `test-replay-cache.js` (3/3), `test-identity-crypto.js`, `test-access-control.js` (9/9).
+
 ### 2026-07-23 — Fix #9 & #10 (Bugfixes): incremental event handler audit fixes
 Two bugs found during audit of the `user_joined`/`user_left` handlers (commits 787cadb, 09a11b5) and fixed:
 
