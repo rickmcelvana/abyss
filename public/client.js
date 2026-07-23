@@ -835,6 +835,98 @@ function updateCallsTabBadge() {
         renderUserList(users);
     });
 
+    socket.on('user_joined', async (user) => {
+        const trust = await checkTrust(user.nick, user.identityKey);
+        state.trustStatus[user.nick] = trust;
+        state.phonebook[user.nick] = { publicKey: user.publicKey, id: user.id, identityKey: user.identityKey, presence: user.presence };
+
+        // Incrementally add the new user row to the sidebar without
+        // rebuilding everything. Handles new, ok, and changed trust states.
+        const isSelf = user.nick === state.myNick;
+        if (!isSelf && trust.status === 'changed') {
+            userListElem.appendChild(buildTrustWarningRow(user, trust));
+            return;
+        }
+
+        const div = document.createElement('div');
+        div.className = 'user-item';
+        div.dataset.nick = user.nick;
+
+        const presenceLabel = user.presence === 'idle' ? 'Idle' : 'Active';
+        const dot = document.createElement('span');
+        dot.className = `presence-dot presence-${user.presence === 'idle' ? 'idle' : 'active'}`;
+        dot.setAttribute('aria-hidden', 'true');
+
+        const openBtn = document.createElement('button');
+        openBtn.type = 'button';
+        openBtn.className = 'user-open-btn';
+        openBtn.setAttribute('aria-label', `Open conversation with ${user.nick} (${presenceLabel.toLowerCase()})`);
+        openBtn.addEventListener('click', () => openPrivateChat(user));
+
+        const strong = document.createElement('strong');
+        strong.className = 'cyan-text';
+        strong.appendChild(dot);
+        strong.appendChild(document.createTextNode(user.nick));
+        const small = document.createElement('small');
+        small.textContent = user.about;
+        openBtn.appendChild(strong);
+        openBtn.appendChild(small);
+        div.appendChild(openBtn);
+
+        const callBtn = document.createElement('button');
+        callBtn.type = 'button';
+        callBtn.className = 'call-btn';
+        callBtn.textContent = 'Call';
+        callBtn.setAttribute('aria-label', `Call ${user.nick}`);
+        callBtn.addEventListener('click', (e) => { e.stopPropagation(); initiateCall(user); });
+        div.appendChild(callBtn);
+
+        if (user.identityKey) {
+            const verifyToggle = document.createElement('button');
+            verifyToggle.type = 'button';
+            verifyToggle.className = 'verify-toggle';
+            verifyToggle.textContent = trust.verified ? '🔒' : '🔑';
+            verifyToggle.setAttribute('aria-label', trust.verified
+                ? `${user.nick}'s identity is verified - view fingerprint`
+                : `${user.nick}'s identity is not yet verified - compare fingerprints`);
+            verifyToggle.title = trust.verified
+                ? 'Verified identity - click to view fingerprint'
+                : 'Not yet verified - click to compare fingerprints';
+            verifyToggle.addEventListener('click', (e) => {
+                e.stopPropagation();
+                toggleFingerprintReveal(div, user, trust);
+            });
+            div.appendChild(verifyToggle);
+        }
+
+        userListElem.appendChild(div);
+        sidebarToggleCount.textContent = userListElem.querySelectorAll('.user-item').length;
+    });
+
+    socket.on('user_left', (data) => {
+        const { nick, id } = data;
+        delete state.phonebook[nick];
+        delete state.trustStatus[nick];
+
+        // Also remove from any private chat history that references this user
+        for (const tabId in state.history) {
+            delete state.history[tabId][id];
+        }
+        for (const tabId in state.typing) {
+            delete state.typing[tabId][nick];
+        }
+
+        const row = userListElem.querySelector(`.user-item[data-nick="${CSS.escape(nick)}"]`);
+        if (row) row.remove();
+        sidebarToggleCount.textContent = userListElem.querySelectorAll('.user-item').length;
+
+        // If this was the active tab's peer, clear the chat
+        const activeTab = document.querySelector('.chat-tab.active');
+        if (activeTab && activeTab.dataset.peerId === id) {
+            setActiveTab(globalTabId);
+        }
+    });
+
     function renderUserList(users) {
         userListElem.innerHTML = '';
         sidebarToggleCount.textContent = users.length;

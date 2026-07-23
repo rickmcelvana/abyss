@@ -514,13 +514,24 @@ io.on('connection', (socket) => {
             nickBindings.delete(oldest);
         }
 
-        // Notify others of the new user list (with their ids for routing).
-        // identityKey rides along here so every client can pin/verify it.
+        const userEntry = {
+            nick, about, publicKey, identityKey, presence: 'active',
+            id: socket.id
+        };
+
+        // Send the full user list (with ids and identity keys) to the new
+        // client so its sidebar and phonebook are populated.
         const userList = Array.from(users.entries()).map(([id, data]) => ({
             ...data,
-            id: id
+            id
         }));
-        io.emit('user_list', userList);
+        socket.emit('user_list', userList);
+
+        // Notify *other* clients about the newcomer with a lightweight event
+        // instead of re-broadcasting the full list. Every connected client
+        // already knows its own identityKey, so only the new user's identity
+        // key needs to travel.
+        socket.to().emit('user_joined', userEntry);
 
         // Tell this specific client they are in
         socket.emit('joined_success');
@@ -646,11 +657,10 @@ io.on('connection', (socket) => {
         const peerIds = endAllSessionsFor(socket.id);
         peerIds.forEach(peerId => io.to(peerId).emit('call_ended', { senderId: socket.id }));
 
+        const leavingUser = users.get(socket.id);
+
         users.delete(socket.id);
-        io.emit('user_list', Array.from(users.entries()).map(([id, data]) => ({
-            ...data,
-            id: id
-        })));
+        socket.to().emit('user_left', { id: socket.id, nick: leavingUser?.nick });
         console.log(`> Disconnected: ${socket.id}`);
     });
 //call

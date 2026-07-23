@@ -82,10 +82,10 @@ Findings are grouped by severity. Each item has a Status field updated as work i
 ## Low
 
 ### 11. `io.emit('user_list', ...)` on every join/disconnect
-- **Location:** `server.js:379-383,494-497`.
-- **Impact:** Broadcasts the full list (with identity keys) to all sockets. Fine at `MAX_USERS=20`, but incremental `user_joined`/`user_left` events would reduce chatter under churn.
-- **Fix:** Optional optimization; not a security issue at current scale.
-- **Status:** TODO
+- **Location:** `server.js:517-535,661-663` (now `server.js:494-497`).
+- **Impact:** Previously broadcast the full user list (with identity keys) to all sockets on every join and disconnect. Incremental events reduce per-event payload from O(n) to O(1).
+- **Fix:** Changed join to send full `user_list` only to the *new* client, and sends a lightweight `user_joined` (single user entry) to all others. Changed disconnect to send `user_left` (just id+nick) to remaining clients. Client now has `user_joined` handler that builds and appends the row incrementally, and `user_left` handler that removes it.
+- **Status:** DONE
 
 ### 12. Synchronous ECDSA verification on the event loop
 - **Location:** `server.js:184-201` `verifyStringSignature` blocks the main thread.
@@ -137,7 +137,13 @@ Findings are grouped by severity. Each item has a Status field updated as work i
 
 ## Work Log
 
-(Entries appended here as fixes/optimizations are implemented.)
+### 2026-07-23 — Fix #6 (Low/Optimization): Incremental user_joined/user_left instead of full user_list broadcast
+- Replaced `io.emit('user_list', fullList)` on join with: full `user_list` to the new client only, + lightweight `user_joined` (single user entry) broadcast to all other clients.
+- Replaced `io.emit('user_list', fullList)` on disconnect with `socket.to().emit('user_left', {id, nick})` to remaining clients.
+- Added `user_joined` socket handler in `client.js` that computes trust status, updates `phonebook`, and appends the new user row incrementally to the sidebar DOM.
+- Added `user_left` socket handler in `client.js` that removes the row, updates phonebook/history, and clears the active tab if the disconnected user was the peer.
+- All 3 test suites pass: `test-turn-hmac.js`, `test-identity-crypto.js`, `test-access-control.js` (9/9 tests).
+- Note: Per-IP connection cap test (test 5) opens `MAX_CONNECTIONS_PER_IP + 2` sockets. Since each socket creates a fresh connection, the rate limit tracking in `connectRateByIp` is keyed by IP (all 127.0.0.1), so the cap fires first. This is pre-existing behavior; my changes do not affect it.
 
 ### 2026-07-22 — Fix #1 (Critical): dotenv loaded at startup
 - Added `require('dotenv').config()` as the first line of `server.js`, before any `process.env` reads.
