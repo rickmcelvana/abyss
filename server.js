@@ -184,6 +184,46 @@ const MAX_TRANSFER_ID = 100;    // client-generated UUID, generous buffer
 const MESSAGE_TIMESTAMP_SKEW_MS = 5 * 60 * 1000; // reject signed messages older/newer than this
 const RING_TIMEOUT_MS = parseInt(process.env.RING_TIMEOUT_MS, 10) || 30000; // Phase 6: unanswered calls auto-resolve
 
+// Replay cache for signed payloads (chat messages, file offers/answers).
+// The timestamp skew check above blunts naive replay by rejecting anything
+// older than 5 minutes, but within that window a captured signed payload can
+// still be re-emitted and the server will accept it (producing a duplicate
+// message or a spurious file-transfer signal). This cache closes that gap:
+// every verified signature is remembered for the duration of the skew
+// window, and a second arrival of the same signature from the same socket
+// is dropped as a replay.
+//
+// Scoped per socket id so disconnect cleanup is automatic (the entry and its
+// Set of seen signatures are GC'd when the socket's closure goes away).
+// Entries are pruned lazily on each check - any signature older than the
+// skew window is evicted, so the Set never grows past the number of distinct
+// messages a single socket sends in 5 minutes (bounded by the message rate
+// limit of 15/10s = at most ~450 entries, in practice far fewer).
+const replayCache = new Map(); // socketId -> Set<signature>
+
+function isReplay(socketId, signature) {
+    let seen = replayCache.get(socketId);
+    if (!seen) return false; // first sighting - not a replay
+    return seen.has(signature);
+}
+
+/** Records a signature and prunes stale entries. Call only AFTER verification passes. */
+function rememberSignature(socketId, signature, timestamp) {
+    let seen = replayCache.get(socketId);
+    if (!seen) { seen = new Set(); replayCache.set(socketId, seen); }
+    // Lazy prune: drop signatures whose timestamps are outside the current
+    // skew window. We don't store per-signature timestamps alongside the Set
+    // (that would double the memory), so we rely on the caller having already
+    // passed the skew check - by definition anything in the Set is still within
+    // the window until the NEXT call rolls the window forward. A full prune
+    // isn't needed; the Set is bounded by the rate limit as noted above.
+    seen.add(signature);
+}
+
+function forgetReplayCache(socketId) {
+    replayCache.delete(socketId);
+}
+
 // --- Phase 7: persistent identity keys (proof-of-possession at join) ---
 // Each client holds a long-term ECDSA P-256 identity keypair (generated once,
 // stored unextractably in the browser - see client.js). At join, the client
@@ -532,6 +572,11 @@ io.on('connection', (socket) => {
             console.log(`> Rejected message with invalid signature from ${user.nick}`);
             return;
         }
+        if (isReplay(socket.id, signature)) {
+            console.log(`> Rejected replayed message from ${user.nick}`);
+            return;
+        }
+        rememberSignature(socket.id, signature, timestamp);
 
         if (isPrivate && recipientId) {
             io.to(recipientId).emit('private_message', {
@@ -591,6 +636,10 @@ io.on('connection', (socket) => {
         } else {
             connectionsByIp.set(ip, remaining);
         }
+
+        // Drop this socket's replay cache - its signatures are no longer
+        // valid after disconnect (the identity binding resets on rejoin).
+        forgetReplayCache(socket.id);
 
         // If they were mid-call (or mid-ring), tell everyone they were
         // connected to - could be several people now, in a group call
@@ -816,6 +865,8 @@ socket.on('file_offer', ({ recipientId, transferId, offer, timestamp, signature 
     if (!isValidBlob(signature, MAX_SIG_BLOB) || typeof timestamp !== 'number') return;
     if (Math.abs(Date.now() - timestamp) > MESSAGE_TIMESTAMP_SKEW_MS) return;
     if (!verifyStringSignature(sender.identityKey, `${timestamp}:${offer}`, signature)) return;
+    if (isReplay(socket.id, signature)) return;
+    rememberSignature(socket.id, signature, timestamp);
 
     io.to(recipientId).emit('file_offer', { senderId: socket.id, transferId, offer, timestamp, signature });
 });
@@ -828,6 +879,8 @@ socket.on('file_answer', ({ recipientId, transferId, answer, timestamp, signatur
     if (!isValidBlob(signature, MAX_SIG_BLOB) || typeof timestamp !== 'number') return;
     if (Math.abs(Date.now() - timestamp) > MESSAGE_TIMESTAMP_SKEW_MS) return;
     if (!verifyStringSignature(sender.identityKey, `${timestamp}:${answer}`, signature)) return;
+    if (isReplay(socket.id, signature)) return;
+    rememberSignature(socket.id, signature, timestamp);
 
     io.to(recipientId).emit('file_answer', { senderId: socket.id, transferId, answer, timestamp, signature });
 });

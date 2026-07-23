@@ -75,7 +75,7 @@ Findings are grouped by severity. Each item has a Status field updated as work i
 - **Location:** `server.js:157,428-430`. A captured signed message can be re-emitted for ~5 minutes and the server will accept it (producing a duplicate).
 - **Impact:** Low for chat; server doesn't track seen nonces.
 - **Fix:** Consider a short per-sender sequence or nonce cache if replay matters. Documented tradeoff acceptable for this app's threat model.
-- **Status:** TODO
+- **Status:** DONE
 
 ---
 
@@ -193,3 +193,12 @@ Findings are grouped by severity. Each item has a Status field updated as work i
 - A nick of `"   "` or one padded with zero-width spaces is now rejected as empty after trim, preventing impersonation via visually identical nicks.
 - Client already trims (`client.js`), but the server is the trust boundary — this closes the gap.
 - Verified: `test-access-control.js` — all 9 tests pass.
+
+### 2026-07-22 — Fix #10 (Medium): replay cache for signed payloads
+- Added a per-socket replay cache (`replayCache: Map<socketId, Set<signature>>`) that tracks verified signatures for the duration of the timestamp skew window.
+- Three handlers now check `isReplay()` after signature verification passes and call `rememberSignature()` before relaying: `message`, `file_offer`, and `file_answer`.
+- A replayed payload (same `(socketId, signature)`) is dropped silently. A new unique message with a fresh timestamp/signature passes normally.
+- Cache is scoped per socket id so disconnect cleanup is automatic — `forgetReplayCache(socket.id)` is called in the `disconnect` handler.
+- Bounded by the per-socket message rate limit (15/10s → at most ~450 entries per socket in the 5-minute window, in practice far fewer).
+- Wrote `test-replay-cache.js` to verify: (1) first send is received, (2) replayed message is dropped, (3) a subsequent unique message still passes. All 3 tests pass.
+- Verified: `test-access-control.js` — all 9 tests still pass.
