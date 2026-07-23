@@ -6,6 +6,16 @@
 
 document.addEventListener('DOMContentLoaded', () => {
     const socket = io();
+
+    const MAX_HISTORY_PER_TAB = 500;
+
+    function capHistory(tabId) {
+        const arr = state.history[tabId];
+        if (arr && arr.length > MAX_HISTORY_PER_TAB) {
+            arr.splice(0, arr.length - MAX_HISTORY_PER_TAB);
+        }
+    }
+
     // Application State
     const state = {
         keys: null,               // RSA KeyPair
@@ -904,25 +914,29 @@ function updateCallsTabBadge() {
     });
 
     socket.on('user_left', (data) => {
-        const { nick, id } = data;
+        const { nick } = data;
         delete state.phonebook[nick];
         delete state.trustStatus[nick];
 
-        // Also remove from any private chat history that references this user
+        // Remove entries from private chat histories that belong to this user,
+        // then cap the arrays to the configured maximum.
         for (const tabId in state.history) {
-            delete state.history[tabId][id];
+            state.history[tabId] = state.history[tabId].filter(
+                entry => entry.senderNick !== nick
+            );
         }
+
         for (const tabId in state.typing) {
             delete state.typing[tabId][nick];
         }
 
+        const pmTabId = `pm_${nick}`;
         const row = userListElem.querySelector(`.user-item[data-nick="${CSS.escape(nick)}"]`);
         if (row) row.remove();
         sidebarToggleCount.textContent = userListElem.querySelectorAll('.user-item').length;
 
-        // If this was the active tab's peer, clear the chat
-        const activeTab = document.querySelector('.chat-tab.active');
-        if (activeTab && activeTab.dataset.peerId === id) {
+        // If the departed nick owned the active tab, switch to global
+        if (state.currentTabId === pmTabId) {
             setActiveTab(globalTabId);
         }
     });
@@ -1470,6 +1484,7 @@ function setActiveTab(id) {
                 senderNick: state.myNick,
                 content: content
             });
+            capHistory('global');
             renderChatHistory();
 
             const timestamp = Date.now();
@@ -1497,6 +1512,7 @@ function setActiveTab(id) {
                     senderNick: state.myNick,
                     content: content
                 });
+                capHistory(state.currentTabId);
                 renderChatHistory();
 
                 const publicKeyObj = await importPublicKey(targetData.publicKey);
@@ -1535,6 +1551,7 @@ socket.on('public_message', async (data) => {
     historyArr.push(authentic
         ? { senderNick: data.nick, content: data.content }
         : { senderNick: data.nick, warning: true });
+    capHistory('global');
     renderChatHistory();
 
     // Don't notify about a message that failed verification - there's no
@@ -1562,6 +1579,7 @@ socket.on('public_message', async (data) => {
 
         if (!authentic) {
             state.history[targetTabId].push({ senderNick: data.nick, warning: true });
+            capHistory(targetTabId);
             if (state.currentTabId !== targetTabId) createTabUI(targetTabId, data.nick);
             setActiveTab(targetTabId);
             return;
@@ -1574,6 +1592,7 @@ socket.on('public_message', async (data) => {
                 senderNick: data.nick,
                 content: decrypted
             });
+            capHistory(targetTabId);
 
             // UI Response: Auto-switch and update history
             if (state.currentTabId !== targetTabId) {
@@ -1801,6 +1820,7 @@ socket.on('public_message', async (data) => {
     function logSystem(text) {
         if (!state.history['global']) state.history['global'] = [];
         state.history['global'].push({ senderNick: '[abyss]', content: text });
+        capHistory('global');
         if (state.currentTabId === 'global') renderChatHistory();
         announce(text);
     }
@@ -3249,6 +3269,7 @@ socket.on('public_message', async (data) => {
         const tabId = `pm_${peerNick}`;
         if (!state.history[tabId]) state.history[tabId] = [];
         state.history[tabId].push(historyRef);
+        capHistory(tabId);
         if (!state.activeTabs.has(tabId)) createTabUI(tabId, peerNick);
         if (state.currentTabId === tabId) renderChatHistory();
     }

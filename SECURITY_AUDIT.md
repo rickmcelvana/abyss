@@ -112,8 +112,8 @@ Findings are grouped by severity. Each item has a Status field updated as work i
 ### O2. `state.history` grows unbounded in the client
 - **Location:** `client.js` (all tab histories).
 - **Impact:** A long-running tab with heavy traffic leaks memory.
-- **Fix:** Circular buffer (e.g., keep last 500 per tab).
-- **Status:** TODO
+- **Fix:** Added `MAX_HISTORY_PER_TAB = 500` with `capHistory(tabId)` helper that trims the oldest entries from the front (`splice(0, arr.length - MAX_HISTORY_PER_TAB)`) immediately after every `.push()` in all 6 message-sink paths plus the file-transfer push. Also fixed a no-op in `user_left` handler that tried to delete entries by `id` — history entries have no `id` property, only `senderNick`. It now filters by `senderNick` and caps the result.
+- **Status:** DONE
 
 ### O3. `String.fromCharCode(...new Uint8Array(buf))` spread on call stack
 - **Location:** `client.js:169,224,266,295-297`.
@@ -144,6 +144,12 @@ Findings are grouped by severity. Each item has a Status field updated as work i
 - Added `user_left` socket handler in `client.js` that removes the row, updates phonebook/history, and clears the active tab if the disconnected user was the peer.
 - All 3 test suites pass: `test-turn-hmac.js`, `test-identity-crypto.js`, `test-access-control.js` (9/9 tests).
 - Note: Per-IP connection cap test (test 5) opens `MAX_CONNECTIONS_PER_IP + 2` sockets. Since each socket creates a fresh connection, the rate limit tracking in `connectRateByIp` is keyed by IP (all 127.0.0.1), so the cap fires first. This is pre-existing behavior; my changes do not affect it.
+
+### 2026-07-23 — Fix #7 (Optimization): `state.history` bounded to 500 entries per tab
+- Added `MAX_HISTORY_PER_TAB = 500` constant and `capHistory(tabId)` helper that trims oldest entries (`splice`) after every history push.
+- Applied to all message-sink paths (outgoing global, outgoing PM, incoming public, incoming PM authentic, incoming PM warning) plus the system message logger and file transfer push — total 7 push sites capped.
+- Fixed a no-op in the `user_left` handler: it previously did `delete state.history[tabId][id]` which attempted to delete `undefined` from each entry (history entries have no `id` property). Replaced with `filter(entry => entry.senderNick !== nick)` to actually remove departed users' messages, followed by `capHistory`.
+- All 3 test suites pass: `test-turn-hmac.js`, `test-identity-crypto.js`, `test-access-control.js` (9/9 tests).
 
 ### 2026-07-22 — Fix #1 (Critical): dotenv loaded at startup
 - Added `require('dotenv').config()` as the first line of `server.js`, before any `process.env` reads.
