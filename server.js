@@ -24,7 +24,17 @@ app.use(helmet({
         }
     }
 }));
-app.use(cors());
+// CORS origin allowlist. Unset = open (origin: "*"), matching the original
+// dev behavior. In production, set ALLOWED_ORIGIN to the exact origin that
+// serves the client (e.g. "https://abyss.example.com") so a malicious site
+// can't open a Socket.IO connection or hit the REST endpoints from a
+// browser. Applies to both Express (app.use(cors())) and Socket.IO below.
+const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || '*';
+const corsOptions = ALLOWED_ORIGIN === '*'
+    ? { origin: '*' }                       // dev: reflect anything
+    : { origin: ALLOWED_ORIGIN, optionsSuccessStatus: 204 };
+
+app.use(cors(corsOptions));
 app.use(express.json());
 app.use(express.static('public'));
 
@@ -92,7 +102,8 @@ const trustProxyConfig = Number.isNaN(TRUST_PROXY) ? false : TRUST_PROXY;
 
 const server = http.createServer(app);
 const io = new Server(server, {
-    cors: { origin: "*" },
+    // Same ALLOWED_ORIGIN gate as Express CORS above. Unset = open (dev).
+    cors: { origin: ALLOWED_ORIGIN },
     // Honor X-Forwarded-For when a trusted reverse proxy is configured
     // (see TRUST_PROXY above). Disabled by default so direct/localhost
     // operation is unaffected. When enabled, socket.handshake.address
@@ -373,6 +384,9 @@ io.on('connection', (socket) => {
         }
         if (!isValidBlob(identityKey, MAX_KEY_BLOB) || !isValidBlob(signature, MAX_SIG_BLOB)) {
             return socket.emit('error', 'Missing or malformed identity key.');
+        }
+        if (!isValidBlob(publicKey, MAX_KEY_BLOB)) {
+            return socket.emit('error', 'Missing or malformed session public key.');
         }
         if (!verifyIdentitySignature(joinNonce, publicKey, identityKey, signature)) {
             return socket.emit('error', 'Identity verification failed - could not prove ownership of the identity key.');

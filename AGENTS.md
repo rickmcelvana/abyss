@@ -45,4 +45,6 @@ Require `puppeteer-core` and Chrome. The `CHROME` constant at the top of each fi
 - Express v5 is used (not v4) — routing and middleware APIs differ.
 - Nicknames are capped at 15 characters server-side (`server.js`).
 - Room password and per-IP cap are env-var driven, not config-file driven.
-- `cors: { origin: "*" }` is set on Socket.IO — intended for local dev, restrict for production.
+- `dotenv` is loaded at the top of `server.js` — `.env` is picked up automatically.
+- Socket.IO and Express CORS default to `origin: "*"` (open, for local dev). Set `ALLOWED_ORIGIN=https://your.domain` in production to restrict cross-origin access.
+- Per-IP connection cap reads `socket.handshake.address`. Behind a reverse proxy (nginx, cloudflared), set `TRUST_PROXY=1` so it honors `X-Forwarded-For`; otherwise every connection appears to come from the proxy's IP.

@@ -35,13 +35,13 @@ Findings are grouped by severity. Each item has a Status field updated as work i
 - **Location:** `server.js:84`. AGENTS.md flags this as dev-only, but there is no env-var check.
 - **Impact:** In production, any malicious website can open a socket and attempt joins, spam public messages, or probe user lists.
 - **Fix:** Gate on an `ALLOWED_ORIGIN` env var; default to `*` only when unset (preserve dev behavior).
-- **Status:** TODO
+- **Status:** DONE
 
 ### 5. Express CORS is wide open too
 - **Location:** `server.js:26` `app.use(cors())` with no options.
 - **Impact:** HTTP surface is small (`/api/ice-config`) but should still be restricted in production.
 - **Fix:** Reuse the same `ALLOWED_ORIGIN` env var for Express CORS.
-- **Status:** TODO
+- **Status:** DONE
 
 ---
 
@@ -63,7 +63,7 @@ Findings are grouped by severity. Each item has a Status field updated as work i
 - **Location:** `server.js:341-349` validates `identityKey` and `signature` blobs but not `publicKey`.
 - **Impact:** The signature binds it (authenticated), but a malicious client can send an arbitrarily large `publicKey` string.
 - **Fix:** Add `isValidBlob(publicKey, MAX_KEY_BLOB)`.
-- **Status:** TODO
+- **Status:** DONE
 
 ### 9. Nick/about not trimmed or normalized server-side
 - **Location:** `server.js:341` checks `!nick` and `nick.length > 15` but a nick of `"   "` (spaces) or zero-width characters passes. Client trims (`client.js:647`) but the server is the trust boundary.
@@ -157,3 +157,16 @@ Findings are grouped by severity. Each item has a Status field updated as work i
 - Salt is regenerated per process (consistent with the app's no-persistent-store design) but still defeats precomputed rainbow tables for the process lifetime.
 - ~100ms per verification — acceptable given the join rate limit (5/30s per socket) and 20-user cap.
 - Verified: `test-access-control.js` — all 9 tests pass, including correct-password acceptance and wrong-password rejection.
+
+### 2026-07-22 — Fix #4 & #5 (High): CORS gated on ALLOWED_ORIGIN
+- Added `ALLOWED_ORIGIN` env var, declared before the Express middleware stack.
+- Express `cors()` and Socket.IO `cors` both consume the same value.
+- Unset (default) → `origin: "*"` (dev behavior preserved). Set to a specific origin (e.g. `https://abyss.example.com`) → only that origin receives `Access-Control-Allow-Origin` in responses; browser-enforced cross-origin blocking applies to all other sites.
+- Verified: with `ALLOWED_ORIGIN=https://abyss.example.com`, the header correctly reflects the allowed origin; disallowed origins get no matching header and are blocked by the browser.
+- Updated `AGENTS.md` Gotchas section to document both `ALLOWED_ORIGIN` and `TRUST_PROXY`.
+
+### 2026-07-22 — Fix #8 (Medium): publicKey size validation at join
+- Added `isValidBlob(publicKey, MAX_KEY_BLOB)` check in the `join` handler, right before the signature verification step.
+- Reuses the existing `MAX_KEY_BLOB` (2000 chars) constant — generous for RSA-2048 SPKI base64 (~392 chars) but blocks arbitrarily large payloads.
+- Error message: `"Missing or malformed session public key."` — distinct from the identity key error so the failure is diagnosable.
+- Verified: `test-access-control.js` — all 9 tests pass (existing tests send a dummy `"x"` publicKey which passes the `> 0` length check; a missing or oversized key is now rejected before signature verification).
