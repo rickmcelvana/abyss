@@ -16,6 +16,22 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    /** Convert a Uint8Array (or ArrayBuffer/TypedArray) to base64 without spreading
+        the buffer onto the call stack, avoiding stack overflow on large inputs. */
+    function uint8ArrayToB64(buf) {
+        const bytes = new Uint8Array(buf);
+        // Build result in chunks of 8192 to keep the apply call stack manageable
+        let result = '';
+        let i = 0;
+        const chunkSize = 8192;
+        while (i < bytes.length) {
+            const end = Math.min(i + chunkSize, bytes.length);
+            result += String.fromCharCode.apply(null, bytes.subarray(i, end));
+            i = end;
+        }
+        return btoa(result);
+    }
+
     // Application State
     const state = {
         keys: null,               // RSA KeyPair
@@ -176,7 +192,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     async function exportIdentityPublicKeyB64(pubKey) {
         const raw = await window.crypto.subtle.exportKey('spki', pubKey);
-        return btoa(String.fromCharCode(...new Uint8Array(raw)));
+        return uint8ArrayToB64(raw);
     }
 
     /** SHA-256 fingerprint of a base64 SPKI public key, as spaced uppercase hex. */
@@ -231,7 +247,7 @@ document.addEventListener('DOMContentLoaded', () => {
             state.identity.privateKey,
             new TextEncoder().encode(message)
         );
-        return btoa(String.fromCharCode(...new Uint8Array(sigBuf)));
+        return uint8ArrayToB64(sigBuf);
     }
 
     /** Verifies an arbitrary string's signature against a base64 SPKI public key. */
@@ -273,7 +289,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     async function exportPublicKey(key) {
         const exported = await window.crypto.subtle.exportKey("spki", key);
-        return btoa(String.fromCharCode(...new Uint8Array(exported)));
+        return uint8ArrayToB64(exported);
     }
 
     async function importPublicKey(base64Key) {
@@ -302,9 +318,9 @@ document.addEventListener('DOMContentLoaded', () => {
         const encryptedAesKey = await window.crypto.subtle.encrypt({ ...RSA_PARAMS, iv: new Uint8Array([0]) }, publicKeyObj, exportedAesKey);
 
         // 4. Package as a dot-separated Base64 string (IV.WrappedKey.Ciphertext)
-        return btoa(String.fromCharCode(...iv)) + "." +
-               btoa(String.fromCharCode(...new Uint8Array(encryptedAesKey))) + "." +
-               btoa(String.fromCharCode(...new Uint8Array(encryptedContent)));
+        return uint8ArrayToB64(iv) + "." +
+               uint8ArrayToB64(encryptedAesKey) + "." +
+               uint8ArrayToB64(encryptedContent);
     }
 
     async function hybridDecrypt(privateKeyObj, blob) {
@@ -596,7 +612,7 @@ function updateCallsTabBadge() {
             state.identity.privateKey,
             new TextEncoder().encode(`${joinNonce}:${pubKeyBase64}`)
         );
-        const signature = btoa(String.fromCharCode(...new Uint8Array(signatureBuf)));
+        const signature = uint8ArrayToB64(signatureBuf);
 
         socket.emit('join', { nick, about, publicKey: pubKeyBase64, identityKey: identityKeyB64, signature, password });
     }

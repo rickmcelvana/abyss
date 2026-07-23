@@ -116,10 +116,10 @@ Findings are grouped by severity. Each item has a Status field updated as work i
 - **Status:** DONE
 
 ### O3. `String.fromCharCode(...new Uint8Array(buf))` spread on call stack
-- **Location:** `client.js:169,224,266,295-297`.
+- **Location:** `client.js:179,234,276,305-307,599` (all crypto export/sign paths).
 - **Impact:** At the sizes here (SDP, signatures) it is safe, but for robustness large buffers could blow the stack.
-- **Fix:** Chunked `fromCharCode.apply` or a binary-string loop helper.
-- **Status:** TODO
+- **Fix:** Added `uint8ArrayToB64(buf)` helper that uses chunked `String.fromCharCode.apply` (8KB chunks) to convert typed arrays to base64 without spreading the entire buffer onto the call stack. Replaced all 6 call sites.
+- **Status:** DONE
 
 ### O4. Uniqueness check is O(n)
 - **Location:** `server.js:368` `Array.from(users.values()).some(...)`.
@@ -150,6 +150,11 @@ Findings are grouped by severity. Each item has a Status field updated as work i
 - Applied to all message-sink paths (outgoing global, outgoing PM, incoming public, incoming PM authentic, incoming PM warning) plus the system message logger and file transfer push — total 7 push sites capped.
 - Fixed a no-op in the `user_left` handler: it previously did `delete state.history[tabId][id]` which attempted to delete `undefined` from each entry (history entries have no `id` property). Replaced with `filter(entry => entry.senderNick !== nick)` to actually remove departed users' messages, followed by `capHistory`.
 - All 3 test suites pass: `test-turn-hmac.js`, `test-identity-crypto.js`, `test-access-control.js` (9/9 tests).
+
+### 2026-07-23 — Fix #8 (Optimization): `String.fromCharCode(...buf)` spread replaced with chunked helper
+- Added `uint8ArrayToB64(buf)` helper that converts typed arrays to base64 using 8KB chunks via `String.fromCharCode.apply`, eliminating call stack overflow risk on large buffers.
+- Replaced all 6 spread call sites: `exportIdentityPublicKeyB64`, `signWithIdentity`, `exportPublicKey`, `hybridEncrypt` (3 calls in one return), and the join signature.
+- All tests pass: `test-identity-crypto.js`, `test-access-control.js` (9/9).
 
 ### 2026-07-22 — Fix #1 (Critical): dotenv loaded at startup
 - Added `require('dotenv').config()` as the first line of `server.js`, before any `process.env` reads.
