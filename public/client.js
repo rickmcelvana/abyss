@@ -9,11 +9,47 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const MAX_HISTORY_PER_TAB = 500;
 
+    /**
+     * Caps a tab's history at MAX_HISTORY_PER_TAB by trimming the oldest
+     * entries from the front. Returns the number of entries removed, so
+     * callers that just appended to the currently-visible tab can prune
+     * the matching number of leading DOM nodes instead of doing a full
+     * re-render (see appendMessage). No-op (returns 0) when under the cap.
+     */
     function capHistory(tabId) {
         const arr = state.history[tabId];
         if (arr && arr.length > MAX_HISTORY_PER_TAB) {
-            arr.splice(0, arr.length - MAX_HISTORY_PER_TAB);
+            const trimmed = arr.length - MAX_HISTORY_PER_TAB;
+            arr.splice(0, trimmed);
+            return trimmed;
         }
+        return 0;
+    }
+
+    /**
+     * Appends a single message to the chat DOM for the given tab, without
+     * rebuilding the whole history. Only touches the DOM when `tabId` is
+     * the currently-active tab (otherwise the entry is already stored in
+     * state.history and will render correctly the next time that tab is
+     * opened). Also prunes leading DOM nodes when capHistory trimmed the
+     * oldest entries from this same tab, keeping the visible list in sync
+     * with state.history without a full re-render. Scrolls to bottom.
+     */
+    function appendMessage(tabId, msgData) {
+        if (state.currentTabId !== tabId) return;
+        const trimmed = capHistory(tabId);
+        if (trimmed > 0) {
+            // Remove the leading `trimmed` message bubbles that were
+            // spliced out of state.history. Each top-level child of
+            // messageDisplay is one rendered message bubble.
+            for (let i = 0; i < trimmed; i++) {
+                const first = messageDisplay.firstElementChild;
+                if (!first) break;
+                first.remove();
+            }
+        }
+        appendMessageToDOM(msgData);
+        messageDisplay.scrollTop = messageDisplay.scrollHeight;
     }
 
     /** Convert a Uint8Array (or ArrayBuffer/TypedArray) to base64 without spreading
@@ -940,10 +976,15 @@ function updateCallsTabBadge() {
 
         // Remove entries from private chat histories that belong to this user,
         // then cap the arrays to the configured maximum.
+        let activeTabChanged = false;
         for (const tabId in state.history) {
-            state.history[tabId] = state.history[tabId].filter(
+            const before = state.history[tabId];
+            state.history[tabId] = before.filter(
                 entry => entry.senderNick !== nick
             );
+            if (tabId === state.currentTabId && state.history[tabId].length !== before.length) {
+                activeTabChanged = true;
+            }
         }
 
         for (const tabId in state.typing) {
@@ -960,8 +1001,14 @@ function updateCallsTabBadge() {
         sidebarToggleCount.textContent = userListElem.querySelectorAll('.user-item').length;
 
         // If the departed nick owned the active tab, switch to global
+        // (setActiveTab does a full re-render). Otherwise, if their messages
+        // were filtered out of the currently-viewed tab (e.g. global), the
+        // append-only render path would leave those bubbles on screen until
+        // the next tab switch — re-render now to stay in sync with state.
         if (state.currentTabId === pmTabId) {
             setActiveTab('global');
+        } else if (activeTabChanged) {
+            renderChatHistory();
         }
     });
 
@@ -1504,12 +1551,12 @@ function setActiveTab(id) {
         if (state.currentTabId === 'global') {
             // OPTIMISTIC UPDATE: Add to history immediately
             if (!state.history['global']) state.history['global'] = [];
-            state.history['global'].push({
+            const msg = {
                 senderNick: state.myNick,
                 content: content
-            });
-            capHistory('global');
-            renderChatHistory();
+            };
+            state.history['global'].push(msg);
+            appendMessage('global', msg);
 
             const timestamp = Date.now();
             const signature = await signWithIdentity(`${timestamp}:${content}`);
@@ -1532,12 +1579,12 @@ function setActiveTab(id) {
             try {
                 // OPTIMISTIC UPDATE: Add to private history immediately
                 if (!state.history[state.currentTabId]) state.history[state.currentTabId] = [];
-                state.history[state.currentTabId].push({
+                const pmMsg = {
                     senderNick: state.myNick,
                     content: content
-                });
-                capHistory(state.currentTabId);
-                renderChatHistory();
+                };
+                state.history[state.currentTabId].push(pmMsg);
+                appendMessage(state.currentTabId, pmMsg);
 
                 const publicKeyObj = await importPublicKey(targetData.publicKey);
                 const encryptedPayload = await hybridEncrypt(publicKeyObj, content);
@@ -1575,8 +1622,7 @@ socket.on('public_message', async (data) => {
     historyArr.push(authentic
         ? { senderNick: data.nick, content: data.content }
         : { senderNick: data.nick, warning: true });
-    capHistory('global');
-    renderChatHistory();
+    appendMessage('global', historyArr[historyArr.length - 1]);
 
     // Don't notify about a message that failed verification - there's no
     // confirmed sender to attribute it to, so there's nothing honest to say.
@@ -1602,8 +1648,8 @@ socket.on('public_message', async (data) => {
         const authentic = await verifyIncomingMessage(data.nick, signedString, data.signature);
 
         if (!authentic) {
-            state.history[targetTabId].push({ senderNick: data.nick, warning: true });
-            capHistory(targetTabId);
+            const warnMsg = { senderNick: data.nick, warning: true };
+            state.history[targetTabId].push(warnMsg);
             if (state.currentTabId !== targetTabId) createTabUI(targetTabId, data.nick);
             setActiveTab(targetTabId);
             return;
@@ -1612,11 +1658,11 @@ socket.on('public_message', async (data) => {
         try {
             const decrypted = await hybridDecrypt(state.keys.privateKey, data.content);
 
-            state.history[targetTabId].push({
+            const pmMsg = {
                 senderNick: data.nick,
                 content: decrypted
-            });
-            capHistory(targetTabId);
+            };
+            state.history[targetTabId].push(pmMsg);
 
             // UI Response: Auto-switch and update history
             if (state.currentTabId !== targetTabId) {
@@ -1843,9 +1889,9 @@ socket.on('public_message', async (data) => {
     // Post a system line into the global tab so call events are visible
     function logSystem(text) {
         if (!state.history['global']) state.history['global'] = [];
-        state.history['global'].push({ senderNick: '[abyss]', content: text });
-        capHistory('global');
-        if (state.currentTabId === 'global') renderChatHistory();
+        const msg = { senderNick: '[abyss]', content: text };
+        state.history['global'].push(msg);
+        appendMessage('global', msg);
         announce(text);
     }
 
@@ -3293,9 +3339,8 @@ socket.on('public_message', async (data) => {
         const tabId = `pm_${peerNick}`;
         if (!state.history[tabId]) state.history[tabId] = [];
         state.history[tabId].push(historyRef);
-        capHistory(tabId);
         if (!state.activeTabs.has(tabId)) createTabUI(tabId, peerNick);
-        if (state.currentTabId === tabId) renderChatHistory();
+        appendMessage(tabId, historyRef);
     }
 
     /** Sender: kicks off a new transfer to peerNick. */

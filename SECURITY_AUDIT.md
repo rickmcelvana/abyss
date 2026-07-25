@@ -106,8 +106,8 @@ Findings are grouped by severity. Each item has a Status field updated as work i
 ### O1. `renderChatHistory()` rebuilds the full DOM on every message
 - **Location:** `client.js:1156-1162`.
 - **Impact:** O(n) per message. For long sessions this is wasteful.
-- **Fix:** Append-only path for new messages; full render only on tab switch.
-- **Status:** TODO
+- **Fix:** Added an append-only path via `appendMessage(tabId, msgData)` that appends a single message bubble to the DOM only when the target tab is the currently-active tab (no DOM work at all when the message lands in a background tab). `renderChatHistory()` (full clear+rebuild) is now used only on tab switches and the rare case where the active tab's history is filtered (e.g. `user_left` removing a departed user's messages from the viewed tab). `capHistory` now returns the number of entries trimmed, so `appendMessage` prunes the leading DOM nodes to stay in sync with `state.history` without a full re-render. Replaced the 7 per-message `renderChatHistory()` call sites (outgoing global/PM, incoming public/PM, `logSystem`, `pushFileHistory`) with `appendMessage`. Also fixed a pre-existing latent bug where `user_left` filtered messages out of `state.history` for all tabs but only re-rendered if the departed user owned the active PM tab — global messages from a departing user would stay on screen until the next tab switch; now re-renders the active tab when its filtered length actually changes.
+- **Status:** DONE
 
 ### O2. `state.history` grows unbounded in the client
 - **Location:** `client.js` (all tab histories).
@@ -136,6 +136,13 @@ Findings are grouped by severity. Each item has a Status field updated as work i
 ---
 
 ## Work Log
+
+### 2026-07-25 — Fix O1 (Optimization): append-only chat rendering instead of full DOM rebuild per message
+- Added `appendMessage(tabId, msgData)` helper that appends a single message bubble to `messageDisplay` only when `tabId === state.currentTabId` (zero DOM work for messages landing in background tabs), then scrolls to bottom. `renderChatHistory()` (full `innerHTML = ''` + re-append all) is now reserved for tab switches and the rare case where the active tab's history is filtered in place.
+- `capHistory(tabId)` now returns the count of entries trimmed from the front, so `appendMessage` removes the matching leading DOM nodes to keep the visible list in sync with `state.history` — no full re-render needed when the cap fires while viewing the tab.
+- Replaced the 7 per-message `renderChatHistory()` call sites: outgoing global (`msgForm` submit), outgoing PM (`msgForm` submit), incoming `public_message`, incoming `private_message` warning path, incoming `private_message` success path, `logSystem`, and `pushFileHistory`. The two `private_message` paths continue to call `setActiveTab` (which does a full render) when switching to the PM tab, but when the user is already on that tab the message is appended directly.
+- Fixed a pre-existing latent bug in `user_left`: it filtered a departed user's messages out of `state.history` for every tab but only re-rendered when the departed user owned the active PM tab. Global messages from a departing user would stay on screen until the next tab switch. Now re-renders the active tab when its filtered length actually changes (and only when not already switching to `global` via the PM-tab path, which re-renders itself).
+- Verified: `node --check public/client.js` (syntax). All test suites pass: `test-turn-hmac.js` (7/7), `test-identity-crypto.js` (7/7), `test-access-control.js` (9/9), `test-replay-cache.js` (3/3).
 
 ### 2026-07-23 — Fix #6 (Low/Optimization): Incremental user_joined/user_left instead of full user_list broadcast
 - Replaced `io.emit('user_list', fullList)` on join with: full `user_list` to the new client only, + lightweight `user_joined` (single user entry) broadcast to all other clients.
