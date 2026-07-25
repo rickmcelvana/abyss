@@ -125,7 +125,7 @@ Findings are grouped by severity. Each item has a Status field updated as work i
 - **Location:** `server.js:368` `Array.from(users.values()).some(...)`.
 - **Impact:** Irrelevant at `MAX_USERS=20`, but a `Set` of nicks would make it O(1) if the cap rises.
 - **Fix:** Maintain a `Set` of in-use nicks alongside the `users` Map.
-- **Status:** TODO
+- **Status:** DONE
 
 ### O5. Tests inject env vars via `spawn`, masking the dotenv bug
 - **Location:** `test-access-control.js:84` and similar.
@@ -242,3 +242,9 @@ Two bugs found during audit of the `user_joined`/`user_left` handlers (commits 7
 - Bounded by the per-socket message rate limit (15/10s → at most ~450 entries per socket in the 5-minute window, in practice far fewer).
 - Wrote `test-replay-cache.js` to verify: (1) first send is received, (2) replayed message is dropped, (3) a subsequent unique message still passes. All 3 tests pass.
 - Verified: `test-access-control.js` — all 9 tests still pass.
+
+### 2026-07-25 — Fix O4 (Optimization): nick uniqueness check is now O(1)
+- Replaced the `Array.from(users.values()).some(u => u.nick === nick)` scan in the `join` handler with a `nicksInUse.has(nick)` lookup against a new `Set` maintained alongside the `users` Map.
+- `nicksInUse.add(nick)` on successful join (right after `users.set`); `nicksInUse.delete(leavingUser.nick)` on disconnect (guarded by `if (leavingUser)` to match the optional-chaining already used in the `user_left` emit). There is only one `users.delete` site in the file, so the mirror cannot drift.
+- Behavior preserved: a taken nick still emits `nick_taken`; the check now runs in O(1) instead of O(n), which matters only if `MAX_USERS` is raised but is strictly better regardless.
+- Verified: `test-access-control.js` (9/9) and `test-replay-cache.js` (3/3) pass. Note: had to `npm install` (deps were missing from the checkout) and `npm install socket.io-client` (it was not pulled in by the initial install despite being in `dependencies`) before the socket-dependent tests could run — pre-existing environment gap, not introduced by this change.

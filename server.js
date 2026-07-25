@@ -113,6 +113,7 @@ const io = new Server(server, {
 
 // State Management
 const users = new Map(); // socketId -> {nick, about, publicKey}
+const nicksInUse = new Set(); // mirror of users' nicks for O(1) uniqueness check
 const MAX_USERS = 20;
 
 // Call Session Management
@@ -492,13 +493,13 @@ io.on('connection', (socket) => {
         }
 
         // 3. Uniqueness Check
-        const exists = Array.from(users.values()).some(u => u.nick === nick);
-        if (exists) {
+        if (nicksInUse.has(nick)) {
             return socket.emit('nick_taken', true);
         }
 
         // 4. Success State
         users.set(socket.id, { nick, about, publicKey, identityKey, presence: 'active' });
+        nicksInUse.add(nick);
         nickBindings.set(nick, fingerprint);
         // Evict oldest entry if the binding cap is reached. Map iteration is
         // insertion-ordered, so the first key is the oldest. Only evicts when
@@ -655,6 +656,7 @@ io.on('connection', (socket) => {
         const leavingUser = users.get(socket.id);
 
         users.delete(socket.id);
+        if (leavingUser) nicksInUse.delete(leavingUser.nick);
         socket.to().emit('user_left', { id: socket.id, nick: leavingUser?.nick });
         console.log(`> Disconnected: ${socket.id}`);
     });
