@@ -84,14 +84,26 @@ function turnConfigured() {
 
 /**
  * Generates a time-limited TURN credential per coturn's REST API convention:
- * username = "<unix expiry>:<identifier>", password = base64(HMAC-SHA1(secret, username)).
+ * username = "<unix expiry>:<identifier>:<random>", password = base64(HMAC-SHA1(secret, username)).
  * coturn verifies this itself at allocation time - no round trip to this
  * server or shared session state required.
+ *
+ * The identifier is the caller's socket id (so the credential is scoped to a
+ * joined socket), but a third party can observe socket ids in `user_list` /
+ * call signaling traffic. Without the random component, a peer who knows A's
+ * socket id and the TTL window could use A's credential from a different
+ * machine within that window (coturn REST credentials are not IP-bound by
+ * default). Appending 16 hex bytes (128 bits) of CSPRNG output makes the
+ * username unguessable/observable from signaling, so only the socket that
+ * actually requested the credential can use it. The random suffix is part
+ * of the HMAC input, so coturn's verification is unaffected - it HMACs the
+ * whole username as-is.
  */
 function generateTurnCredential(identifier) {
     const ttl = parseInt(process.env.TURN_TTL_SECONDS, 10) || 14400; // 4h default
     const expiry = Math.floor(Date.now() / 1000) + ttl;
-    const username = `${expiry}:${identifier}`;
+    const random = crypto.randomBytes(16).toString('hex');
+    const username = `${expiry}:${identifier}:${random}`;
     const password = crypto.createHmac('sha1', process.env.TURN_SECRET)
         .update(username)
         .digest('base64');

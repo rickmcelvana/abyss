@@ -231,12 +231,26 @@ Verification:
 - `GET /api/ice-config` — returns `200 {"iceServers":[...]}` with the body parser removed.
 - `node test-turn-hmac.js`, `node test-identity-crypto.js`, `node test-rsa-key-strength.js`, `node test-replay-cache.js` (7/7), `node test-access-control.js` (9/9) — all unaffected, pass.
 
-### M6. `generateTurnCredential` uses `socket.id` as the identifier — predictable and per-session
+### M6. `generateTurnCredential` uses `socket.id` as the identifier — predictable and per-session  ✅ FIXED
 `server.js:75-83`, used at `server.js:548`
 
 The TURN username is `<expiry>:<socket.id>`. `socket.id` is public (relayed to peers in `user_list`/call signaling) and predictable. That's fine for coturn REST auth (the credential is HMAC'd with the secret, and the username is meant to be public), but it means a credential issued to socket A is valid for *any* TURN allocation under that username until expiry — and the username is just the socket id, which a peer knows. A peer could use A's TURN credential from a different machine within the TTL window. coturn REST credentials are not bound to an IP by default.
 
 **Fix:** include a random component in the identifier (e.g. `${expiry}:${socket.id}:${crypto.randomBytes(8).toString('hex')}`) so the username is not guessable/observable from signaling traffic, and/or configure coturn with an IP allowlist. Low severity (TURN bandwidth is the resource at risk, and TTL is bounded), but worth noting.
+
+**Resolution (applied in this change):** Appended 16 random bytes (128 bits, hex-encoded as 32 chars) from `crypto.randomBytes` to the TURN username, so it is now `<expiry>:<socket.id>:<random>` instead of `<expiry>:<socket.id>`. The random suffix is part of the HMAC input, so coturn's REST-API verification is unaffected — it HMACs the whole username as-is and never inspects the structure past the leading `expiry:` field. The only change coturn sees is a longer username, which its REST auth accepts (the username is an opaque string to coturn).
+
+Why 16 bytes (128 bits): the audit suggested 8 bytes (`crypto.randomBytes(8).toString('hex')`), but 16 bytes costs nothing extra in a single call per `get_ice_config` (which is itself rate-limited and only fires right before a call) and gives a comfortable collision-resistance margin even if many credentials are ever minted for the same socket. A 128-bit random makes the username computationally unguessable regardless of how much signaling traffic an attacker observes.
+
+The `socket.id` is still kept in the username (not replaced) because it scopes the credential to the joined socket that requested it, which is useful for server-side logging/correlation and matches coturn's expectation that the identifier is meaningful to the issuing server. The random component closes the observable-from-signaling hole on top of that scoping.
+
+Threat closed: a peer who observes A's `socket.id` in `user_list` / call signaling could previously use A's credential (`<expiry>:<A-socket-id>`) from a different machine within the TTL window, since coturn REST credentials are not IP-bound by default. The credential now contains 128 bits the peer cannot observe or predict, so only the socket that actually requested the credential (and received the password over the same authenticated Socket.IO connection) can use it.
+
+Verification:
+- `node test-turn-hmac.js` — 10/10 checks pass. The existing 7 checks were updated for the new `expiry:identifier:random` username format (format regex, tamper test, "different identifiers" test all still hold), and a new Test 6 asserts the core M6 fix: two calls to `generateTurnCredential` with the *same* identifier at the *same* instant produce different usernames AND different passwords (which would fail if the random component were ever dropped), and that both still verify against the secret.
+- `node test-identity-crypto.js`, `node test-rsa-key-strength.js`, `node test-file-sanitize.js`, `node test-replay-cache.js` (7/7), `node test-access-control.js` (9/9) — unaffected, pass. `test-access-control.js` boots the server (which wires `generateTurnCredential` into the `get_ice_config` handler) and exercises join/disconnect/rate-limit paths without issue.
+
+No client change, no protocol change, no migration. The credential is opaque to the client — it just forwards `username`/`credential` to the TURN server verbatim.
 
 ---
 
@@ -318,7 +332,7 @@ Bounded by `MAX_GROUP_SIZE = 4` per socket. Fine.
 | M3 | Medium (✅ fixed) | `server.js:1028` | Startup warning when `ALLOWED_ORIGIN` set but `TRUST_PROXY` unset |
 | M4 | Medium (✅ fixed) | `server.js:104` | Set `maxHttpBufferSize` 256 KB, `pingInterval` 10s, `pingTimeout` 20s |
 | M5 | Medium (✅ fixed) | `server.js:38` | Removed dead `express.json()` middleware (only GET route, no body) |
-| M6 | Medium | `server.js:75` | TURN username is the public socket id; add randomness |
+| M6 | Medium (✅ fixed) | `server.js:75` | TURN username now `<expiry>:<socket.id>:<128-bit random>` - unobservable from signaling |
 | L1–L8 | Low | various | HSTS guidance, nick-binding eviction, dev-deps cleanup, etc. |
 | O1–O6 | Opt | various | Documented/bounded; optional `DocumentFragment` render, etc. |
 

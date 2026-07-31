@@ -10,7 +10,8 @@ const SECRET = "test-shared-secret-please-rotate";
 // --- Reimplementation under test (must match server.js exactly) ---
 function generateTurnCredential(identifier, ttlSeconds) {
     const expiry = Math.floor(Date.now() / 1000) + ttlSeconds;
-    const username = `${expiry}:${identifier}`;
+    const random = crypto.randomBytes(16).toString('hex');
+    const username = `${expiry}:${identifier}:${random}`;
     const password = crypto.createHmac('sha1', SECRET)
         .update(username)
         .digest('base64');
@@ -40,7 +41,7 @@ function check(label, cond) {
 {
     const { username, credential } = generateTurnCredential("socket123", 14400);
     const result = verifyAsCoturnWould(username, credential, SECRET);
-    check("fresh credential format is 'expiry:identifier'", /^\d+:socket123$/.test(username));
+    check("fresh credential format is 'expiry:identifier:random'", /^\d+:socket123:[0-9a-f]{32}$/.test(username));
     check("fresh credential verifies against shared secret", result.ok);
 }
 
@@ -72,6 +73,22 @@ function check(label, cond) {
     const b = generateTurnCredential("bob-socket", 14400);
     check("different identifiers produce different usernames", a.username !== b.username);
     check("different identifiers produce different passwords", a.credential !== b.credential);
+}
+
+// Test 6: same identifier at the same instant produces different creds (M6).
+// The random suffix makes the username unguessable/observable from signaling
+// (where socket id is public), so a peer who knows A's socket id cannot reuse
+// A's credential from a different machine. If the random component were ever
+// dropped, this test would fail: two calls with the same identifier and same
+// expiry would yield identical usernames and passwords.
+{
+    const a = generateTurnCredential("socket123", 14400);
+    const b = generateTurnCredential("socket123", 14400);
+    check("same identifier yields different usernames (random suffix)", a.username !== b.username);
+    check("same identifier yields different passwords (random suffix)", a.credential !== b.credential);
+    check("both credentials still verify against the secret",
+        verifyAsCoturnWould(a.username, a.credential, SECRET).ok &&
+        verifyAsCoturnWould(b.username, b.credential, SECRET).ok);
 }
 
 console.log(failures === 0 ? "\nAll HMAC tests passed." : `\n${failures} test(s) FAILED.`);
