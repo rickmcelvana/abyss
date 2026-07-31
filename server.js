@@ -20,7 +20,18 @@ app.use(helmet({
     contentSecurityPolicy: {
         directives: {
             ...helmet.contentSecurityPolicy.getDefaultDirectives(),
-            'connect-src': ["'self'", 'blob:']
+            // blob: for file transfers (see comment above), plus 'self' for
+            // the Socket.IO transport, which runs on the page's own origin.
+            'connect-src': ["'self'", 'blob:'],
+            // The app is never meant to be embedded in a frame. Helmet's
+            // default is frame-ancestors 'self', which still permits same-
+            // origin framing - a latent clickjacking vector against the
+            // call/file-accept consent dialogs. 'none' forbids all framing
+            // (including by same-origin pages), which is the correct policy
+            // here and also survives if helmet's frameguard (X-Frame-Options)
+            // is ever disabled. CSP frame-ancestors takes precedence over
+            // X-Frame-Options in browsers that support both.
+            'frame-ancestors': ["'none'"]
         }
     }
 }));

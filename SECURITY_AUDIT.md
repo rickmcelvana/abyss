@@ -65,7 +65,7 @@ Verification:
 
 No protocol change, no client change, no migration. The cache is an internal server-side deduplication layer; its keying strategy is invisible to clients.
 
-### H2. CSP allows `blob:` in `connect-src` but not the WebSocket origin for TURN/STUN — and lacks `wss:`/`ws:` clarity
+### H2. CSP allows `blob:` in `connect-src` but not the WebSocket origin for TURN/STUN — and lacks `wss:`/`ws:` clarity  ✅ FIXED
 `server.js:19-26`
 
 The custom CSP adds `'blob:'` to `connect-src` for file downloads. That is correct and well-reasoned. However:
@@ -75,6 +75,16 @@ The custom CSP adds `'blob:'` to `connect-src` for file downloads. That is corre
 The real gap: **`object-src` and `base-uri` inherit from `helmet`'s defaults**, which is good, but there is no explicit `frame-ancestors 'none'` / `frame-src 'none'`. The app is not designed to be embedded, and a malicious page could `<iframe>` it and attempt clickjacking on the call/file-accept dialogs (which have real consequences — accepting a call/file is a consent action). `helmet` sets `frame-ancestors` via `crossOriginResourcePolicy`? No — it sets it through `frameguard` only when enabled. Default `helmet()` includes `frameguard: { action: 'sameorigin' }`? Actually helmet's default `frameguard` sets `X-Frame-Options: SAMEORIGIN`, which protects against cross-origin framing; this is acceptable. Still, an explicit CSP `frame-ancestors 'none'` is stronger and survives if `frameguard` is ever disabled.
 
 **Fix (minor):** add `'frame-ancestors': ['none']` to the CSP directives for defense in depth, since accept/call buttons are consent-gated.
+
+**Resolution (applied in this change):** Added `'frame-ancestors': ["'none'"]` to the CSP `directives` block in `server.js`. Confirmed via `helmet.contentSecurityPolicy.getDefaultDirectives()` that the helmet default was `frame-ancestors: ["'self'"]` — i.e. same-origin framing was permitted, not denied. The app is never embedded and its call/file-accept buttons are consent-gated actions, so `'none'` is the correct policy: it forbids all framing (same- and cross-origin) and takes precedence over helmet's `frameguard` (`X-Frame-Options: SAMEORIGIN`) in browsers that support both CSP and XFO, while also remaining effective on the off chance `frameguard` is ever disabled.
+
+No change to `connect-src` was needed: WebRTC ICE/TURN (`stun:`/`turn:`/`turns:`/udp) is not governed by `connect-src`, and Socket.IO runs on the page's own origin (`'self'`). The existing `connect-src: ['self', 'blob:']` is correct for the file-download path it was designed for.
+
+Verification:
+- `node --check server.js` — passes.
+- `node test-access-control.js` — all 9 tests pass; the server boots with the updated helmet middleware stack and responds normally.
+
+No client change, no protocol change, no migration. The CSP header is the only thing that changed.
 
 ### H3. Public-key import does not validate that the key is actually an RSA key, or the right size
 `public/client.js:331-337`
@@ -213,7 +223,7 @@ Bounded by `MAX_GROUP_SIZE = 4` per socket. Fine.
 |----|----------|------|-----------|
 | C1 | Critical (✅ fixed) | `server.js:530,660` | `socket.to().emit` sends to nobody; now uses `socket.broadcast.emit` |
 | H1 | High (✅ fixed) | `server.js:202` | Replay cache now keyed on identity fingerprint (was per-socket) |
-| H2 | High | `server.js:19-26` | Add explicit `frame-ancestors 'none'` to CSP |
+| H2 | High (✅ fixed) | `server.js:19-26` | Added explicit `frame-ancestors 'none'` to CSP (was helmet's `'self'`) |
 | H3 | High | `client.js:331` | Validate imported peer RSA key is ≥2048 bits |
 | M1 | Medium | `server.js:572` | `timestamp` accepts `NaN`; use `Number.isFinite` |
 | M2 | Medium | `client.js:3522,3322` | Harden receiver-side `name`/`mimeType` for file transfers |
