@@ -215,10 +215,21 @@ Verification:
 - `node test-replay-cache.js` — 7/7 pass; legitimate messages, file offers/answers, and the cross-socket block all flow normally under the tightened buffer limit (largest test payload is well under 256 KB).
 - `node test-access-control.js` — all 9 tests pass; join/disconnect/rate-limit/cap behavior is unchanged, the 100 KB `MAX_SDP_BLOB` cap still fits comfortably under 256 KB, and the flood tests confirm excess frames are dropped rather than crashing the server.
 
-### M5. `express.json()` has no `limit`
+### M5. `express.json()` has no `limit`  ✅ FIXED
 `server.js:38`
 
 `express.json()` with no `limit` defaults to 100 KB, which is fine — but the only JSON endpoint is `/api/ice-config` (GET, no body). `express.json()` is therefore dead middleware (no POST/PUT routes) that still parses any POST body up to 100 KB. Harmless, but remove it (or set an explicit small `limit: '1kb'`) to avoid surprise.
+
+**Resolution (applied in this change):** Removed `app.use(express.json())` from the Express middleware stack. Confirmed via `grep app\.(get|post|put|patch|delete)` that the only REST route is `GET /api/ice-config`, which carries no request body, and that every other endpoint is a Socket.IO event whose payloads are framed by Engine.IO, not HTTP JSON. The middleware was therefore dead — it would parse any POST/PUT body up to its default 100 KB limit for no route, allocating memory on every such request for nothing.
+
+Removing it (rather than setting `limit: '1kb'`) was the chosen fix because a body parser with no consuming route is pure surface: it doesn't matter how small its `limit` is if nothing ever reads `req.body`. If a body-parsing route is ever added, `express.json({ limit: '1kb' })` (or whatever bound the new route actually needs) should be reintroduced at that point — an inline comment at the site of the removal says so.
+
+No client change, no protocol change, no migration. `GET /api/ice-config` is unaffected (GETs have no body to parse) — verified by hitting it directly with `Invoke-WebRequest` and getting `200` with the expected STUN-server JSON.
+
+Verification:
+- `node --check server.js` — passes.
+- `GET /api/ice-config` — returns `200 {"iceServers":[...]}` with the body parser removed.
+- `node test-turn-hmac.js`, `node test-identity-crypto.js`, `node test-rsa-key-strength.js`, `node test-replay-cache.js` (7/7), `node test-access-control.js` (9/9) — all unaffected, pass.
 
 ### M6. `generateTurnCredential` uses `socket.id` as the identifier — predictable and per-session
 `server.js:75-83`, used at `server.js:548`
@@ -306,7 +317,7 @@ Bounded by `MAX_GROUP_SIZE = 4` per socket. Fine.
 | M2 | Medium (✅ fixed) | `client.js:3522,3322` | Sanitize filename, force `application/octet-stream` blob type, tighten size check |
 | M3 | Medium (✅ fixed) | `server.js:1028` | Startup warning when `ALLOWED_ORIGIN` set but `TRUST_PROXY` unset |
 | M4 | Medium (✅ fixed) | `server.js:104` | Set `maxHttpBufferSize` 256 KB, `pingInterval` 10s, `pingTimeout` 20s |
-| M5 | Medium | `server.js:38` | `express.json()` is unused; remove or set `limit` |
+| M5 | Medium (✅ fixed) | `server.js:38` | Removed dead `express.json()` middleware (only GET route, no body) |
 | M6 | Medium | `server.js:75` | TURN username is the public socket id; add randomness |
 | L1–L8 | Low | various | HSTS guidance, nick-binding eviction, dev-deps cleanup, etc. |
 | O1–O6 | Opt | various | Documented/bounded; optional `DocumentFragment` render, etc. |

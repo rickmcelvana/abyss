@@ -46,7 +46,12 @@ const corsOptions = ALLOWED_ORIGIN === '*'
     : { origin: ALLOWED_ORIGIN, optionsSuccessStatus: 204 };
 
 app.use(cors(corsOptions));
-app.use(express.json());
+// No express.json() body parser: the only REST route is GET /api/ice-config
+// (no request body), and all other endpoints are Socket.IO events whose
+// payloads are framed by Engine.IO, not HTTP JSON. Leaving express.json() in
+// the stack would parse any POST body up to its default 100 KB limit for no
+// route - dead middleware that just allocates memory. If a body-parsing
+// route is ever added, reintroduce express.json({ limit: '1kb' }) then.
 app.use(express.static('public'));
 
 const limiter = rateLimit({
