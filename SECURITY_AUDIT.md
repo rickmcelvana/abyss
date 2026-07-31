@@ -140,7 +140,7 @@ Verification:
 
 No protocol change. A conforming client always sends `Date.now()` (a finite integer), so no legitimate message is affected.
 
-### M2. `isValidBlob` checks length but not content; signaling blobs are relayed verbatim to other peers
+### M2. `isValidBlob` checks length but not content; signaling blobs are relayed verbatim to other peers  ✅ FIXED
 `server.js:178-180`, relay at `server.js:820-823`, `server.js:839`, `server.js:848`, `server.js:878`, `server.js:892`, `server.js:900`
 
 SDP/ICE/answer blobs are described as "client-encrypted opaque strings" and the server "never parses them." That is a sound design. The risk: `isValidBlob` only asserts `typeof string && length <= maxLen`. The server then forwards `io.to(recipientId).emit(...)` to a single peer, which is fine. But for `file_offer`/`file_answer` the relayed blob is what the *recipient* decrypts with RSA-OAEP; a malicious sender can send a 100 KB blob that, once RSA-decrypted, yields a crafted JSON with an oversized `size` or a hostile `name`/`mimeType`.
@@ -153,6 +153,25 @@ The client does bound `payload.size` against `MAX_FILE_SIZE` (`client.js:3522`),
 - On the receiver, strip/restrict `mimeType` to a known-safe set, or force `application/octet-stream` and ignore the sender's type. The `download` attribute already prevents navigation, so this is belt-and-suspenders.
 - Sanitize `payload.name` to a basename (strip path separators, control chars) before using it for `download`.
 - Consider signing the *offer metadata* (`name`/`size`/`mimeType`) rather than only the SDP offer, so a tampered relayed blob can't substitute different metadata. Currently the signature is over `${timestamp}:${offer}` where `offer` is the encrypted SDP, not the decrypted metadata — so a malicious server *could* re-encrypt a different metadata payload? No — the server can't re-encrypt (it lacks the peer's RSA key). But it could drop and replay; the metadata is inside the encrypted envelope, so integrity of metadata relies on RSA/OAEP correctness, which is sound. The main residual is a *malicious sender*, which is the threat model's peer-not-server case, and the sender is the one who chose the metadata anyway. Net: low risk, keep the receiver-side `mimeType`/`name` hardening.
+
+**Resolution (applied in this change):** Receiver-side defense-in-depth in `public/client.js`. The server's relay design is unchanged (it still never parses encrypted blobs — that's correct); the hardening is at the point where the metadata is actually decrypted and consumed.
+
+**Filename sanitization — `sanitizeFileName(name)`** (new helper near the file-transfer constants):
+- Coerces to string; non-strings (null/undefined/number/…) fall back to `'file'`.
+- Strips path separators (`/`, `\`) — so `"../../etc/passwd"` becomes `"etcpasswd"` and `"..\windows\system32"` becomes `"windowssystem32"`, closing path-traversal in save dialogs.
+- Strips control characters (`\x00-\x1F`, `\x7F`) — NULs, newlines, DEL.
+- Strips leading dots — so `.bashrc` becomes `bashrc`, can't become a hidden dotfile on platforms that honor it.
+- Collapses whitespace, trims, caps at 255 chars (common filesystem ceiling), falls back to `'file'` if nothing safe remains.
+- Applied in the `file_offer` handler right after the `size` validation, *before* the name is stored in `pendingOffer` or rendered in the modal text — so the sanitized name is what flows into `historyRef.name`, the `<a download>` attribute, and the OS-suggested save name.
+
+**Blob type forced to `application/octet-stream`** — in `setupReceiveChannel`, the `new Blob(t.receivedChunks, …)` call now hardcodes `{ type: 'application/octet-stream' }` instead of using the sender's `t.historyRef.mimeType`. The `download` attribute on the `<a>` already forces a download (no navigation), but hardcoding the type guarantees a received blob can never render as active content (`text/html`, `image/svg+xml`, …) even if `downloadUrl` is ever opened directly or used in an `<iframe>`/`<img>` in a future change — closing the latent stored-XSS-in-blob footgun that the CSP's `blob:` allowance could otherwise expose. The sender's `mimeType` is still stored in `historyRef` for the status-text display only; it never reaches the `Blob`.
+
+**Tightened `size` validation** — the `file_offer` handler's size check was `typeof payload.size !== 'number' || payload.size > MAX_FILE_SIZE`. Tightened to also reject `NaN`, `±Infinity`, and negative values (`!Number.isFinite(payload.size) || payload.size < 0 || …`), since a negative or non-finite size would break the receive-loop progress math and the done-check.
+
+Verification:
+- New `node test-file-sanitize.js` — 25/25 checks: path traversal (unix + windows), control chars (NUL/newline/DEL), leading dots, whitespace collapse, non-string coercion, length cap, empty fallback, and the full size-validation truth table (negative/NaN/Infinity/over-max/string/null all rejected; zero, valid, and max accepted).
+- `node test-replay-cache.js` (7/7), `node test-rsa-key-strength.js` (7/7), `node test-identity-crypto.js` (7/7), `node test-turn-hmac.js` (7/7) — unaffected, pass.
+- The change is receiver-side only; the server relay and the sender's `startFileTransfer` (which legitimately uses `file.name`/`file.type` from the OS file picker) are unchanged. A conforming sender's real filename is preserved unless it contains path separators or control chars, in which case it's cleaned rather than rejected.
 
 ### M3. `socket.handshake.address` is used for the per-IP cap and rate limit, but TRUST_PROXY defaults to off
 `server.js:379-385`, `server.js:395-402`
@@ -258,7 +277,7 @@ Bounded by `MAX_GROUP_SIZE = 4` per socket. Fine.
 | H2 | High (✅ fixed) | `server.js:19-26` | Added explicit `frame-ancestors 'none'` to CSP (was helmet's `'self'`) |
 | H3 | High (✅ fixed) | `client.js:331`, `server.js` join | Server rejects <RSA-2048 session keys at join; client throws on import |
 | M1 | Medium (✅ fixed) | `server.js:572` | `timestamp` now checked with `Number.isFinite` (rejects NaN/±Infinity) |
-| M2 | Medium | `client.js:3522,3322` | Harden receiver-side `name`/`mimeType` for file transfers |
+| M2 | Medium (✅ fixed) | `client.js:3522,3322` | Sanitize filename, force `application/octet-stream` blob type, tighten size check |
 | M3 | Medium | `server.js:100` | Warn when `ALLOWED_ORIGIN` set but `TRUST_PROXY` unset |
 | M4 | Medium | `server.js:104` | Set `maxHttpBufferSize`, `pingInterval`, `pingTimeout` |
 | M5 | Medium | `server.js:38` | `express.json()` is unused; remove or set `limit` |

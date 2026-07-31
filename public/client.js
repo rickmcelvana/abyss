@@ -3190,6 +3190,31 @@ socket.on('public_message', async (data) => {
             : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     }
 
+    /**
+     * Sanitizes a sender-supplied filename for safe local use (the <a
+     * download> attribute and the OS-suggested save name). Strips path
+     * separators (so "../../etc/passwd" can't traverse), control characters
+     * (NULs, newlines), and leading dots (so a name like ".bashrc" can't
+     * become a hidden dotfile on platforms that honor it). Coerces to a
+     * plain string, caps length, and falls back to "file" if nothing safe
+     * remains. The sender chooses the name, so this is defense-in-depth
+     * against a malicious peer - the download attribute already prevents
+     * navigation, but a clean basename closes social-engineering vectors
+     * (misleading extensions, path traversal in save dialogs).
+     */
+    const MAX_FILE_NAME_LEN = 255; // common filesystem ceiling
+    function sanitizeFileName(name) {
+        if (typeof name !== 'string') return 'file';
+        let clean = name
+            .replace(/[\\/]/g, '')      // strip path separators
+            .replace(/[\x00-\x1F\x7F]/g, '') // strip control chars
+            .replace(/^\.+/g, '')       // strip leading dots
+            .replace(/\s+/g, ' ')       // collapse whitespace
+            .trim()
+            .slice(0, MAX_FILE_NAME_LEN);
+        return clean || 'file';
+    }
+
     /** Tears down the peer connection/channel for a transfer. The history record (if any) is left in place - it's the permanent record of what happened, same as a call log entry. */
     function cleanupTransferConnection(transferId) {
         const t = state.fileTransfers[transferId];
@@ -3329,7 +3354,15 @@ socket.on('public_message', async (data) => {
                 refreshFileBubble(transferId);
             }
             if (done) {
-                const blob = new Blob(t.receivedChunks, { type: t.historyRef.mimeType || 'application/octet-stream' });
+                // Force application/octet-stream regardless of the sender's
+                // claimed mimeType: the download attribute already prevents
+                // navigation, but hardcoding the type guarantees a received
+                // blob can never render as active content (text/html, image,
+                // svg, ...) even if downloadUrl is ever opened directly or
+                // used in an <iframe>/<img> in a future change. The sender's
+                // mimeType stays in historyRef for the status-text display
+                // only; it never reaches the Blob.
+                const blob = new Blob(t.receivedChunks, { type: 'application/octet-stream' });
                 t.historyRef.downloadUrl = URL.createObjectURL(blob);
                 t.historyRef.status = 'complete';
                 t.historyRef.progress = 100;
@@ -3529,10 +3562,21 @@ socket.on('public_message', async (data) => {
             console.error('File offer decrypt error:', err);
             return;
         }
-        if (typeof payload.size !== 'number' || payload.size > MAX_FILE_SIZE) {
+        // Validate the sender-supplied metadata before acting on it. size is
+        // the load-bearing field (bounds the receive loop and the blob); name
+        // and mimeType are sender-chosen and get sanitized below. A negative
+        // or non-finite size would break the progress math and the done-check.
+        if (typeof payload.size !== 'number' || !Number.isFinite(payload.size) || payload.size < 0 || payload.size > MAX_FILE_SIZE) {
             socket.emit('file_decline', { recipientId: senderId, transferId });
             return;
         }
+        // Sanitize the filename for safe local use (download attribute / OS
+        // save name). See sanitizeFileName - strips path traversal, control
+        // chars, leading dots. mimeType is left as-is for the UI status text
+        // but is NEVER fed to the Blob (see setupReceiveChannel), so a
+        // hostile text/html type can't render if the blob URL is ever
+        // navigated to.
+        payload.name = sanitizeFileName(payload.name);
 
         state.fileTransfers[transferId] = {
             role: 'receiver', peerId: senderId, peerNick,
