@@ -1,0 +1,8 @@
+********************************************************
+* WARNING: ALLOWED_ORIGIN is set (production-looking)   *
+* but TRUST_PROXY is unset. Behind a reverse proxy,    *
+* the per-IP connection cap and connect-rate limit are  *
+* INEFFECTIVE (every client appears as the proxy IP).  *
+* Set TRUST_PROXY=<number of proxies in front> (e.g. 1) *
+* so socket.handshake.address reflects the real client.*
+********************************************************

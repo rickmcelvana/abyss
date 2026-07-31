@@ -1,0 +1,8 @@
+◇ injected env (0) from .env // tip: ⌘ override existing { override: true }
+Abyss.Tunnel activated on port 3097
+> Ring timeout: 30000ms
+> Room password: not required
+> Max connections per IP: 5
+> Connect rate per IP: 20/60000ms
+> CORS origin: https://abyss.example.com
+> Proxy trust: off
