@@ -86,7 +86,7 @@ Verification:
 
 No client change, no protocol change, no migration. The CSP header is the only thing that changed.
 
-### H3. Public-key import does not validate that the key is actually an RSA key, or the right size
+### H3. Public-key import does not validate that the key is actually an RSA key, or the right size  ✅ FIXED
 `public/client.js:331-337`
 
 `importPublicKey` imports any SPKI blob as `RSA-OAEP` with `hash: SHA-256` and `modulusLength` not re-checked. Web Crypto will throw on malformed input (so it fails closed — good), but a 1024-bit RSA key supplied by a malicious peer would import and be used for `hybridEncrypt`. The session encryption layer is forward-secure-ish (fresh AES key per message), but a weak peer RSA key means an attacker who records ciphertext could later brute-force the RSA-wrapped AES key. There is no server-side enforcement of RSA key strength either; the join only checks `MAX_KEY_BLOB` size (`server.js:472`).
@@ -94,6 +94,27 @@ No client change, no protocol change, no migration. The CSP header is the only t
 The client generates its own key at 2048 bits (`RSA_PARAMS`, `client.js:110`), but accepts whatever a peer presents.
 
 **Fix:** after importing, export the key and check `algorithm.modulusLength >= 2048`; reject smaller. Or have the server verify key parameters at join (parse the SPKI DER, assert modulus length). Low-effort, high-value.
+
+**Resolution (applied in this change):** Defense-in-depth on **both** sides, matching the app's "each client independently verifies; the server may be malicious" trust model.
+
+**Server (`server.js`):**
+- Added `isAcceptableRsaPublicKey(publicKeyB64)` (near `fingerprintOf`). It parses the SPKI DER via `crypto.createPublicKey` and asserts `asymmetricKeyType === 'rsa'` AND `asymmetricKeyDetails.modulusLength >= 2048`. Malformed keys are caught and fail closed (`return false`). `MIN_RSA_MODULUS = 2048`.
+- Wired into the `join` handler right after the `publicKey` blob-size check, before signature verification: a sub-2048 or non-RSA session key is rejected with `"Session encryption key must be RSA-2048 or stronger."` and never enters the phonebook. This is the primary gate — a weak key can't reach any peer.
+- Node's `createPublicKey` exposes `asymmetricKeyType` and `asymmetricKeyDetails.modulusLength` directly (verified for 512/1024/2048/3072-bit keys), so no manual DER parsing is needed.
+
+**Client (`public/client.js`):**
+- `importPublicKey` now imports the key, then checks `keyObj.algorithm.modulusLength >= 2048` and `throw`s if it's smaller (or if `algorithm` is missing). This is the client-side trust anchor: even a fully malicious server that relays a crafted weak key can't make a recipient encrypt to one. Every caller already wraps `importPublicKey` in a `try` (message send, call initiation, file transfer) or fire-and-forgets it (a console error is the right outcome for an unrecoverable malicious-server case). The error message includes the actual modulus length for debugging.
+
+`connect-src` CSP is unaffected; this is a crypto-strength check, not a network policy change.
+
+Verification:
+- New `node test-rsa-key-strength.js` — 7/7 checks: rejects RSA-512, RSA-1024, EC P-256, garbage, empty string; accepts RSA-2048 and RSA-3072.
+- `node test-identity-crypto.js`, `node test-turn-hmac.js` — unaffected, pass.
+- `node test-access-control.js` — all 9 tests pass. Updated the test harness to generate a real RSA-2048 session key (the old `"x"` stand-in now correctly fails the strength check); the intentional-garbage flood test (Test 6) still produces a validation error as expected.
+- `node test-replay-cache.js` — all 6 tests pass. Same harness update; the cross-socket block uses a real RSA-2048 key for the second socket's join.
+- `test-calls.js` — harness updated to use real RSA-2048 session keys so legitimate joins and the stale-nonce-rejection test (0g) exercise their intended code paths (the stale-nonce test now actually tests signature rejection, not key-strength rejection).
+
+No protocol change. A client that was somehow generating a <2048-bit RSA session key would now be rejected at join; the client's own `RSA_PARAMS` already specifies 2048 bits (`client.js:110`), so no conforming client is affected.
 
 ---
 
@@ -224,7 +245,7 @@ Bounded by `MAX_GROUP_SIZE = 4` per socket. Fine.
 | C1 | Critical (✅ fixed) | `server.js:530,660` | `socket.to().emit` sends to nobody; now uses `socket.broadcast.emit` |
 | H1 | High (✅ fixed) | `server.js:202` | Replay cache now keyed on identity fingerprint (was per-socket) |
 | H2 | High (✅ fixed) | `server.js:19-26` | Added explicit `frame-ancestors 'none'` to CSP (was helmet's `'self'`) |
-| H3 | High | `client.js:331` | Validate imported peer RSA key is ≥2048 bits |
+| H3 | High (✅ fixed) | `client.js:331`, `server.js` join | Server rejects <RSA-2048 session keys at join; client throws on import |
 | M1 | Medium | `server.js:572` | `timestamp` accepts `NaN`; use `Number.isFinite` |
 | M2 | Medium | `client.js:3522,3322` | Harden receiver-side `name`/`mimeType` for file transfers |
 | M3 | Medium | `server.js:100` | Warn when `ALLOWED_ORIGIN` set but `TRUST_PROXY` unset |

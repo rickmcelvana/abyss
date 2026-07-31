@@ -23,6 +23,16 @@ const bufToB64 = (buf) => Buffer.from(buf).toString('base64');
 async function generateIdentity() {
     return subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']);
 }
+// Real RSA-2048 session key (the server now rejects sub-2048 / non-RSA keys
+// at join - see isAcceptableRsaPublicKey in server.js). The old "x" stand-in
+// no longer passes the strength check.
+async function generateSessionPublicKeyB64() {
+    const pair = await subtle.generateKey(
+        { name: 'RSA-OAEP', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' },
+        true, ['encrypt', 'decrypt']
+    );
+    return bufToB64(await subtle.exportKey('spki', pair.publicKey));
+}
 async function exportSpkiB64(pubKey) { return bufToB64(await subtle.exportKey('spki', pubKey)); }
 async function signString(privateKey, message) {
     const sig = await subtle.sign(
@@ -52,7 +62,7 @@ function joinWith(nick, password) {
         const { s, nonce } = await connectRaw();
         const identity = await generateIdentity();
         const identityKeyB64 = await exportSpkiB64(identity.publicKey);
-        const sessionPublicKey = "x";
+        const sessionPublicKey = await generateSessionPublicKeyB64();
         const signature = await signJoin(identity.privateKey, nonce, sessionPublicKey);
         s.identity = identity; // reusable for signing further messages after join
         s.on("joined_success", () => resolve({ s, outcome: "joined" }));

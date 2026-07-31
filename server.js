@@ -313,6 +313,32 @@ function fingerprintOf(identityKeyB64) {
     return crypto.createHash('sha256').update(Buffer.from(identityKeyB64, 'base64')).digest('hex').toUpperCase();
 }
 
+/**
+ * Validates the strength of a peer's per-session RSA public key (the one used
+ * for hybrid message/file encryption, NOT the long-term ECDSA identity key).
+ * The join blob-size check (MAX_KEY_BLOB) only bounds the wire length; it does
+ * not stop a 1024-bit RSA key from slipping through, and Web Crypto on the
+ * recipient side will happily import and encrypt to one. A weak peer RSA key
+ * means an attacker who records ciphertext could later brute-force the
+ * RSA-wrapped AES session key, so we reject anything below RSA-2048 at the
+ * door. Returns true if the key is RSA with modulusLength >= 2048, false
+ * otherwise (including malformed keys - fail closed).
+ */
+const MIN_RSA_MODULUS = 2048;
+function isAcceptableRsaPublicKey(publicKeyB64) {
+    try {
+        const keyObj = crypto.createPublicKey({
+            key: Buffer.from(publicKeyB64, 'base64'),
+            format: 'der',
+            type: 'spki'
+        });
+        if (keyObj.asymmetricKeyType !== 'rsa') return false;
+        return (keyObj.asymmetricKeyDetails?.modulusLength || 0) >= MIN_RSA_MODULUS;
+    } catch (err) {
+        return false; // malformed - treat as unacceptable, don't crash the join
+    }
+}
+
 // --- Phase 2 (second hardening round): server-side nick-to-identity binding ---
 // The per-connection uniqueness check below only prevents two people from
 // holding the same nick AT THE SAME TIME - it says nothing about someone
@@ -512,6 +538,12 @@ io.on('connection', (socket) => {
         }
         if (!isValidBlob(publicKey, MAX_KEY_BLOB)) {
             return socket.emit('error', 'Missing or malformed session public key.');
+        }
+        // Enforce RSA-2048+ for the per-session encryption key. A weak peer
+        // key would let a ciphertext-recording attacker later recover the
+        // RSA-wrapped AES session keys. See isAcceptableRsaPublicKey.
+        if (!isAcceptableRsaPublicKey(publicKey)) {
+            return socket.emit('error', 'Session encryption key must be RSA-2048 or stronger.');
         }
         if (!verifyIdentitySignature(joinNonce, publicKey, identityKey, signature)) {
             return socket.emit('error', 'Identity verification failed - could not prove ownership of the identity key.');

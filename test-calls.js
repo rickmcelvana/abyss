@@ -13,6 +13,17 @@ function bufToB64(buf) { return Buffer.from(buf).toString('base64'); }
 async function generateIdentity() {
     return subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']);
 }
+// Real RSA-2048 session key (the server now rejects sub-2048 / non-RSA keys
+// at join - see isAcceptableRsaPublicKey in server.js). The old "x" stand-in
+// no longer passes the strength check, so tests that need to reach past the
+// key-validation stage must use a real key.
+async function generateSessionPublicKeyB64() {
+    const pair = await subtle.generateKey(
+        { name: 'RSA-OAEP', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' },
+        true, ['encrypt', 'decrypt']
+    );
+    return bufToB64(await subtle.exportKey('spki', pair.publicKey));
+}
 async function exportSpkiB64(pubKey) {
     return bufToB64(await subtle.exportKey('spki', pubKey));
 }
@@ -49,7 +60,7 @@ function makeClient(nick, mutate) {
             s.identityKeyB64 = await exportSpkiB64(identity.publicKey);
             s.joinNonce = nonce;
 
-            const sessionPublicKey = "x"; // stand-in RSA session key, as before
+            const sessionPublicKey = await generateSessionPublicKeyB64(); // real RSA-2048 key (server rejects <2048)
             let signature = await signJoin(identity.privateKey, nonce, sessionPublicKey);
             let payload = { nick, about: "tester", publicKey: sessionPublicKey, identityKey: s.identityKeyB64, signature };
             if (mutate) payload = mutate(payload, { nonce, identity });
@@ -84,7 +95,7 @@ function joinRaw(nick, identity) {
         s.on("connect", async () => {
             const nonce = await nonceReceived;
             const identityKeyB64 = await exportSpkiB64(identity.publicKey);
-            const sessionPublicKey = "x";
+            const sessionPublicKey = await generateSessionPublicKeyB64();
             const signature = await signJoin(identity.privateKey, nonce, sessionPublicKey);
             s.emit("join", { nick, about: "x", publicKey: sessionPublicKey, identityKey: identityKeyB64, signature });
         });
@@ -155,9 +166,10 @@ function joinRaw(nick, identity) {
         (async () => {
             const [identity, nonce] = await Promise.all([generateIdentity(), nonceReceived]);
             const identityKeyB64 = await exportSpkiB64(identity.publicKey);
+            const realSessionKey = await generateSessionPublicKeyB64();
             // Sign a DIFFERENT (stale/made-up) nonce than the one just issued
-            const staleSignature = await signJoin(identity.privateKey, "some-old-stale-nonce", "x");
-            s.emit("join", { nick: "replay-guy", about: "x", publicKey: "x", identityKey: identityKeyB64, signature: staleSignature });
+            const staleSignature = await signJoin(identity.privateKey, "some-old-stale-nonce", realSessionKey);
+            s.emit("join", { nick: "replay-guy", about: "x", publicKey: realSessionKey, identityKey: identityKeyB64, signature: staleSignature });
         })();
         s.on("error", (m) => { log("replay-guy", `rejected as expected: ${m}`); s.disconnect(); resolve(); });
         s.on("joined_success", () => { log("replay-guy", "UNEXPECTED: joined with a stale-nonce signature!"); s.disconnect(); resolve(); });

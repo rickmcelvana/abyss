@@ -333,7 +333,17 @@ document.addEventListener('DOMContentLoaded', () => {
         const buf = new Uint8Array(str.length);
         for (let i = 0; i < str.length; i++) buf[i] = str.charCodeAt(i);
         // Strict "encrypt" only to satisfy browser security for public keys
-        return await window.crypto.subtle.importKey("spki", buf, { name: "RSA-OAEP", hash: "SHA-256" }, true, ["encrypt"]);
+        const keyObj = await window.crypto.subtle.importKey("spki", buf, { name: "RSA-OAEP", hash: "SHA-256" }, true, ["encrypt"]);
+        // Defense-in-depth: the server already rejects <RSA-2048 at join, but
+        // the trust anchor for this app is each client independently - a
+        // malicious server could relay a weak key anyway. Refuse to encrypt to
+        // anything below 2048 bits so a recorded ciphertext can't be cracked
+        // offline via a brute-forceable RSA modulus. Throws (caught by every
+        // caller) rather than silently returning a usable key.
+        if (!keyObj.algorithm || keyObj.algorithm.modulusLength < 2048) {
+            throw new Error('Peer session key is RSA-' + (keyObj.algorithm?.modulusLength || '?') + '; RSA-2048 minimum required.');
+        }
+        return keyObj;
     }
 
     /**

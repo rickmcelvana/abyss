@@ -18,6 +18,16 @@ const bufToB64 = (buf) => Buffer.from(buf).toString('base64');
 async function generateIdentity() {
     return subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']);
 }
+// Real RSA-2048 session key (the server now rejects sub-2048 / non-RSA keys
+// at join - see isAcceptableRsaPublicKey in server.js). The old "x" stand-in
+// no longer passes the strength check.
+async function generateSessionPublicKeyB64() {
+    const pair = await subtle.generateKey(
+        { name: 'RSA-OAEP', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' },
+        true, ['encrypt', 'decrypt']
+    );
+    return bufToB64(await subtle.exportKey('spki', pair.publicKey));
+}
 async function exportSpkiB64(pubKey) { return bufToB64(await subtle.exportKey('spki', pubKey)); }
 async function signString(privateKey, message) {
     const sig = await subtle.sign(
@@ -41,7 +51,7 @@ async function joinWith(nick) {
     const { s, nonce } = await connectRaw();
     const identity = await generateIdentity();
     const identityKeyB64 = await exportSpkiB64(identity.publicKey);
-    const sessionPublicKey = "x";
+    const sessionPublicKey = await generateSessionPublicKeyB64();
     const signature = await signString(identity.privateKey, `${nonce}:${sessionPublicKey}`);
     s.identity = identity;
     await new Promise((resolve, reject) => {
@@ -129,11 +139,13 @@ function check(label, cond) {
         // fingerprint may use multiple nicks across sockets).
         const { s: secondSock, nonce: nonceB } = await connectRaw();
         const sameIdentityKeyB64 = await exportSpkiB64(senderA.identity.publicKey);
-        const sigJoinB = await signString(senderA.identity.privateKey, `${nonceB}:x`);
+        const secondSessionKey = await generateSessionPublicKeyB64();
+        const sigJoinB = await signString(senderA.identity.privateKey, `${nonceB}:${secondSessionKey}`);
         await new Promise((resolve, reject) => {
-            secondSock.once("error", (e) => reject(new Error("second socket join failed: " + e)));
-            secondSock.once("joined_success", () => resolve());
-            secondSock.emit("join", { nick: "rcs-b", about: "x", publicKey: "x", identityKey: sameIdentityKeyB64, signature: sigJoinB, password: "" });
+            const errTimer = setTimeout(() => reject(new Error("second socket join timed out")), 5000);
+            secondSock.once("error", (e) => { clearTimeout(errTimer); reject(new Error("second socket join failed: " + e)); });
+            secondSock.once("joined_success", () => { clearTimeout(errTimer); resolve(); });
+            secondSock.emit("join", { nick: "rcs-b", about: "x", publicKey: secondSessionKey, identityKey: sameIdentityKeyB64, signature: sigJoinB, password: "" });
         });
         await wait(200);
 
