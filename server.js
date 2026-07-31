@@ -119,7 +119,21 @@ const io = new Server(server, {
     // (see TRUST_PROXY above). Disabled by default so direct/localhost
     // operation is unaffected. When enabled, socket.handshake.address
     // reflects the real client IP instead of the proxy's address.
-    ...(trustProxyConfig !== false ? { trustProxy: trustProxyConfig } : {})
+    ...(trustProxyConfig !== false ? { trustProxy: trustProxyConfig } : {}),
+    // Tighten the Engine.IO/Socket.IO inbound frame limit below the 1 MB
+    // default. The largest legitimate payload is an encrypted SDP blob
+    // (MAX_SDP_BLOB = 100000), plus its JSON envelope; 256 KB is a generous
+    // ceiling that still rejects oversized frames before `isValidBlob` ever
+    // runs, so a malicious client can't force the server to allocate and
+    // parse a 1 MB buffer before the size check throws it out.
+    maxHttpBufferSize: 256 * 1024,
+    // Mobile-friendly heartbeat tuning (the README stresses mobile use).
+    // Defaults (25s interval / 20s timeout) keep connections alive longer
+    // than necessary and are slow to detect a dead link on flaky cellular
+    // networks; 10s interval / 20s timeout detects dropped peers faster
+    // without adding noticeable overhead on a healthy connection.
+    pingInterval: 10000,
+    pingTimeout: 20000
 });
 
 // State Management

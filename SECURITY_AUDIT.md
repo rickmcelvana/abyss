@@ -192,7 +192,7 @@ Verification:
 
 No protocol change, no client change, no migration. The warning is startup-only and prints nothing on the request hot path.
 
-### M4. No `pingTimeout`/`pingInterval` or `maxHttpBufferSize` hardening on Socket.IO
+### M4. No `pingTimeout`/`pingInterval` or `maxHttpBufferSize` hardening on Socket.IO  ✅ FIXED
 `server.js:104-112`
 
 The `Server` constructor sets only `cors` and optionally `trustProxy`. Defaults:
@@ -200,6 +200,20 @@ The `Server` constructor sets only `cors` and optionally `trustProxy`. Defaults:
 - No explicit `pingTimeout`/`pingInterval`; defaults are usually fine but not tuned for a mobile-friendly app (the README stresses mobile).
 
 **Fix:** set `maxHttpBufferSize: 256 * 1024` and consider `pingInterval: 10000`, `pingTimeout: 20000`.
+
+**Resolution (applied in this change):** Added three options to the `new Server(server, …)` constructor in `server.js`, alongside the existing `cors`/`trustProxy` config:
+
+- **`maxHttpBufferSize: 256 * 1024`** — tightens the Engine.IO inbound frame limit from the 1 MB default down to 256 KB. The largest legitimate payload is an encrypted SDP blob (`MAX_SDP_BLOB = 100000` bytes) plus its JSON envelope, so 256 KB is a generous ceiling. This rejects oversized frames *before* `isValidBlob` runs, so a malicious client can no longer force the server to allocate and parse a 1 MB buffer before the size check throws it out — bounded by the 20-user cap but tightened for defense-in-depth and lower memory pressure during a flood.
+- **`pingInterval: 10000`** — 10 s heartbeat, down from the 25 s default. The README stresses mobile use; flaky cellular networks benefit from faster dead-link detection.
+- **`pingTimeout: 20000`** — 20 s timeout, matching the default but now explicit. Combined with the 10 s interval, a dropped peer is detected within ~30 s rather than ~45 s, without adding noticeable overhead on healthy connections.
+
+No new state, no protocol change, no migration. The options are constructor-level Socket.IO config; they take effect on the next server restart and are invisible to clients. A client sending a >256 KB frame now gets an Engine.IO-level transport error instead of a server-side `isValidBlob` rejection — both fail closed, the new path is just earlier and cheaper.
+
+Verification:
+- `node --check server.js` — passes.
+- `node test-turn-hmac.js`, `node test-identity-crypto.js`, `node test-rsa-key-strength.js` — unaffected, pass (these don't touch the server).
+- `node test-replay-cache.js` — 7/7 pass; legitimate messages, file offers/answers, and the cross-socket block all flow normally under the tightened buffer limit (largest test payload is well under 256 KB).
+- `node test-access-control.js` — all 9 tests pass; join/disconnect/rate-limit/cap behavior is unchanged, the 100 KB `MAX_SDP_BLOB` cap still fits comfortably under 256 KB, and the flood tests confirm excess frames are dropped rather than crashing the server.
 
 ### M5. `express.json()` has no `limit`
 `server.js:38`
@@ -291,7 +305,7 @@ Bounded by `MAX_GROUP_SIZE = 4` per socket. Fine.
 | M1 | Medium (✅ fixed) | `server.js:572` | `timestamp` now checked with `Number.isFinite` (rejects NaN/±Infinity) |
 | M2 | Medium (✅ fixed) | `client.js:3522,3322` | Sanitize filename, force `application/octet-stream` blob type, tighten size check |
 | M3 | Medium (✅ fixed) | `server.js:1028` | Startup warning when `ALLOWED_ORIGIN` set but `TRUST_PROXY` unset |
-| M4 | Medium | `server.js:104` | Set `maxHttpBufferSize`, `pingInterval`, `pingTimeout` |
+| M4 | Medium (✅ fixed) | `server.js:104` | Set `maxHttpBufferSize` 256 KB, `pingInterval` 10s, `pingTimeout` 20s |
 | M5 | Medium | `server.js:38` | `express.json()` is unused; remove or set `limit` |
 | M6 | Medium | `server.js:75` | TURN username is the public socket id; add randomness |
 | L1–L8 | Low | various | HSTS guidance, nick-binding eviction, dev-deps cleanup, etc. |
