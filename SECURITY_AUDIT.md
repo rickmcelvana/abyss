@@ -37,7 +37,7 @@ No new state, no protocol change, no migration — purely a one-method swap on t
 
 ## High
 
-### H1. Replay cache is per-socket only — replay across two sockets of the same identity is not stopped
+### H1. Replay cache is per-socket only — replay across two sockets of the same identity is not stopped  ✅ FIXED
 `server.js:202-221`, message/file handlers at `server.js:582`, `server.js:875`, `server.js:889`
 
 `isReplay(socketId, signature)` keys on the emitting socket id. A signature is a function of `<timestamp>:<content>` signed by the identity private key, and a single identity can open multiple sockets (different tabs, or an attacker who legitimately holds the key). The 5-minute timestamp skew window (`MESSAGE_TIMESTAMP_SKEW_MS`) bounds this, but within that window a captured signed payload can be re-injected from a *different* socket of the same identity and the server will accept it (a different `socketId` → empty cache entry). For private/file messages this produces a spurious duplicate on the recipient; for public messages it re-broadcasts.
@@ -48,6 +48,22 @@ This is a defense-in-depth layer (the client re-verifies signatures independentl
 - Key the replay cache on the identity fingerprint rather than (or in addition to) the socket id:
   `replayCache.get(fingerprint)?.has(signature)`. The fingerprint is already computed at join (`server.js:484`) and available from `users.get(socket.id)`.
 - Alternatively, include the socket id in the signed string so a signature is bound to one connection (heavier change, breaks rejoin replay).
+
+**Resolution (applied in this change):** Option 1 — the replay cache is now keyed on the identity fingerprint instead of the socket id. A signature is produced by an *identity* key, not any one socket, so deduplicating by fingerprint matches the actual trust unit and closes the cross-socket hole.
+
+Changes in `server.js`:
+- `replayCache` is now `Map<fingerprint, Set<signature>>`. `isReplay`/`rememberSignature` take a fingerprint instead of a socket id.
+- The fingerprint is computed once at join (`fingerprintOf(identityKey)`, already done for the nick-binding check) and stored on the user record (`users.set(socket.id, { ..., fingerprint, ... })`), so the message/file handlers read `user.fingerprint` / `sender.fingerprint` with no extra hashing per event.
+- The cache entry's lifetime is now tied to the *identity*, not a single socket, via a reference count (`identityRefCount: Map<fingerprint, number>`). `identityJoined(fingerprint)` increments on join; `identityLeft(fingerprint)` decrements on disconnect and only drops the cache when the last socket for that identity leaves. This keeps a second tab protected while the first disconnects, and prevents the cache from leaking after a real disconnect.
+- A `MAX_REPLAY_BINDINGS = 1000` FIFO cap mirrors the existing `nickBindings` cap as defense-in-depth against pathological churn (the per-IP cap already bounds concurrent identities, but an explicit ceiling is cheap insurance).
+- The old `forgetReplayCache(socketId)` on disconnect is replaced by `identityLeft(leavingUser.fingerprint)` inside the `if (leavingUser)` block, so a socket that never successfully joined doesn't touch the refcount.
+
+Verification:
+- `node test-replay-cache.js` — the existing same-socket replay checks still pass, and a new cross-socket regression block was added: socket A sends a signed message, a second socket B joined under the *same identity key* replays the exact payload, and the test asserts it is rejected while a genuinely new message from B still goes through. (6/6 checks pass.)
+- `node test-access-control.js` — all 9 join/disconnect/rate-limit tests pass, confirming the refcount bookkeeping doesn't break join or disconnect.
+- `node test-identity-crypto.js`, `node test-turn-hmac.js` — unaffected, still pass.
+
+No protocol change, no client change, no migration. The cache is an internal server-side deduplication layer; its keying strategy is invisible to clients.
 
 ### H2. CSP allows `blob:` in `connect-src` but not the WebSocket origin for TURN/STUN — and lacks `wss:`/`ws:` clarity
 `server.js:19-26`
@@ -196,7 +212,7 @@ Bounded by `MAX_GROUP_SIZE = 4` per socket. Fine.
 | ID | Severity | Area | One-liner |
 |----|----------|------|-----------|
 | C1 | Critical (✅ fixed) | `server.js:530,660` | `socket.to().emit` sends to nobody; now uses `socket.broadcast.emit` |
-| H1 | High | `server.js:202` | Replay cache is per-socket; key on identity fingerprint |
+| H1 | High (✅ fixed) | `server.js:202` | Replay cache now keyed on identity fingerprint (was per-socket) |
 | H2 | High | `server.js:19-26` | Add explicit `frame-ancestors 'none'` to CSP |
 | H3 | High | `client.js:331` | Validate imported peer RSA key is ≥2048 bits |
 | M1 | Medium | `server.js:572` | `timestamp` accepts `NaN`; use `Number.isFinite` |

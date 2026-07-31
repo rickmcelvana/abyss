@@ -44,8 +44,10 @@ async function joinWith(nick) {
     const sessionPublicKey = "x";
     const signature = await signString(identity.privateKey, `${nonce}:${sessionPublicKey}`);
     s.identity = identity;
-    await new Promise((resolve) => {
-        s.once("joined_success", () => resolve());
+    await new Promise((resolve, reject) => {
+        const errTimer = setTimeout(() => reject(new Error(`join timed out for nick "${nick}"`)), 5000);
+        s.once("error", (e) => { clearTimeout(errTimer); reject(new Error(`join rejected for "${nick}": ${e}`)); });
+        s.once("joined_success", () => { clearTimeout(errTimer); resolve(); });
         s.emit("join", { nick, about: "x", publicKey: sessionPublicKey, identityKey: identityKeyB64, signature, password: "" });
     });
     return s;
@@ -101,6 +103,57 @@ function check(label, cond) {
 
         sender.disconnect();
         receiver.disconnect();
+
+        // --- Cross-socket replay regression (H1) ---
+        // The replay cache is keyed on the identity fingerprint, not the
+        // socket id. A signature produced by one socket of an identity must
+        // still be rejected when replayed from a *different* socket of that
+        // same identity (e.g. a second tab, or an attacker who captured a
+        // signed payload and re-emits it). Before the fix this passed because
+        // the second socket had an empty cache entry.
+        const senderA = await joinWith("rcs-a");
+        const crossReceiver = await joinWith("rcr");
+        let crossRecvCount = 0;
+        crossReceiver.on("public_message", () => { crossRecvCount++; });
+
+        // Socket A sends one signed message.
+        const tsA = Date.now();
+        const msgA = "cross-socket-replay-msg";
+        const sigA = await signString(senderA.identity.privateKey, `${tsA}:${msgA}`);
+        senderA.emit("message", { content: msgA, isPrivate: false, timestamp: tsA, signature: sigA });
+        await wait(500);
+        check("cross-socket: first send from socket A was received", crossRecvCount === 1);
+
+        // Open a SECOND socket under the SAME identity key, join as a
+        // different nick (allowed - the binding is nick->fingerprint, and a
+        // fingerprint may use multiple nicks across sockets).
+        const { s: secondSock, nonce: nonceB } = await connectRaw();
+        const sameIdentityKeyB64 = await exportSpkiB64(senderA.identity.publicKey);
+        const sigJoinB = await signString(senderA.identity.privateKey, `${nonceB}:x`);
+        await new Promise((resolve, reject) => {
+            secondSock.once("error", (e) => reject(new Error("second socket join failed: " + e)));
+            secondSock.once("joined_success", () => resolve());
+            secondSock.emit("join", { nick: "rcs-b", about: "x", publicKey: "x", identityKey: sameIdentityKeyB64, signature: sigJoinB, password: "" });
+        });
+        await wait(200);
+
+        // Socket B replays the EXACT payload socket A already sent. The
+        // fingerprint-keyed cache must reject it.
+        secondSock.emit("message", { content: msgA, isPrivate: false, timestamp: tsA, signature: sigA });
+        await wait(500);
+        check("cross-socket: replayed signature from a different socket of the same identity was rejected", crossRecvCount === 1);
+
+        // A genuinely new message from socket B must still go through.
+        const tsB = Date.now();
+        const msgB = "cross-socket-unique-msg";
+        const sigB = await signString(senderA.identity.privateKey, `${tsB}:${msgB}`);
+        secondSock.emit("message", { content: msgB, isPrivate: false, timestamp: tsB, signature: sigB });
+        await wait(500);
+        check("cross-socket: a fresh message from socket B was received", crossRecvCount === 2);
+
+        senderA.disconnect();
+        secondSock.disconnect();
+        crossReceiver.disconnect();
     } catch (err) {
         console.error("Test error:", err);
         failures++;

@@ -189,35 +189,65 @@ const RING_TIMEOUT_MS = parseInt(process.env.RING_TIMEOUT_MS, 10) || 30000; // P
 // The timestamp skew check above blunts naive replay by rejecting anything
 // older than 5 minutes, but within that window a captured signed payload can
 // still be re-emitted and the server will accept it (producing a duplicate
-// message or a spurious file-transfer signal). This cache closes that gap:
-// every verified signature is remembered for the lifetime of the socket,
-// and a second arrival of the same signature from the same socket is
-// dropped as a replay.
+// message or a spurious file-transfer signal). This cache closes that gap.
 //
-// Scoped per socket id so disconnect cleanup is automatic (the entry and its
-// Set of seen signatures are GC'd when the socket's closure goes away). The
-// Set is never explicitly pruned, but is bounded by the per-socket message
-// rate limit (15/10s = at most ~450 entries in the 5-minute window, in
-// practice far fewer), so it never grows without limit.
-const replayCache = new Map(); // socketId -> Set<signature>
+// Scoped per IDENTITY FINGERPRINT, not per socket id. A single long-term
+// identity key can legitimately back multiple concurrent sockets (two tabs,
+// a reconnect overlapping the old one, etc.), and a signature is produced by
+// that identity key, not by any one socket. Keying on socket id left a hole:
+// a captured signature replayed from a *different* socket of the same
+// identity passed the cache (different socketId -> empty Set). Keying on the
+// fingerprint closes that hole - the second socket sees the signature the
+// first one already recorded.
+//
+// Reference-counted: an identity may hold several sockets at once, so the
+// cache entry is dropped only when the LAST socket for that identity goes
+// away (see the disconnect handler). The Set is bounded by the per-socket
+// message rate limit (15/10s) times the per-IP concurrent cap (5) -> at most
+// ~2250 entries per identity in the 5-minute window, in practice far fewer.
+// A hard FIFO cap (MAX_REPLAY_BINDINGS) protects against pathological churn
+// the way the nick-bindings cap does.
+const MAX_REPLAY_BINDINGS = 1000;
+const replayCache = new Map(); // fingerprint -> Set<signature>
+const identityRefCount = new Map(); // fingerprint -> open socket count
 
-function isReplay(socketId, signature) {
-    let seen = replayCache.get(socketId);
+function isReplay(fingerprint, signature) {
+    let seen = replayCache.get(fingerprint);
     if (!seen) return false; // first sighting - not a replay
     return seen.has(signature);
 }
 
 /** Records a signature after verification passes. Call only AFTER
-    isReplay() returns false. The Set is bounded by the per-socket rate
-    limit and cleaned up on disconnect, so no per-entry pruning is needed. */
-function rememberSignature(socketId, signature) {
-    let seen = replayCache.get(socketId);
-    if (!seen) { seen = new Set(); replayCache.set(socketId, seen); }
+    isReplay() returns false. Bounded by the per-socket rate limit and the
+    identity reference count; FIFO-capped via MAX_REPLAY_BINDINGS. */
+function rememberSignature(fingerprint, signature) {
+    let seen = replayCache.get(fingerprint);
+    if (!seen) { seen = new Set(); replayCache.set(fingerprint, seen); }
     seen.add(signature);
+    if (replayCache.size > MAX_REPLAY_BINDINGS) {
+        const oldest = replayCache.keys().next().value;
+        replayCache.delete(oldest);
+    }
 }
 
-function forgetReplayCache(socketId) {
-    replayCache.delete(socketId);
+/** Tracks a socket joining under an identity. Call once per successful
+    join, after the fingerprint is known. Idempotent across reconnects of the
+    same socket (a join always precedes the matching disconnect). */
+function identityJoined(fingerprint) {
+    identityRefCount.set(fingerprint, (identityRefCount.get(fingerprint) || 0) + 1);
+}
+
+/** Tracks a socket leaving an identity. Drops the replay cache for that
+    identity only when no more sockets remain under it, so a second tab of
+    the same identity stays protected while the first disconnects. */
+function identityLeft(fingerprint) {
+    const remaining = (identityRefCount.get(fingerprint) || 1) - 1;
+    if (remaining <= 0) {
+        identityRefCount.delete(fingerprint);
+        replayCache.delete(fingerprint);
+    } else {
+        identityRefCount.set(fingerprint, remaining);
+    }
 }
 
 // --- Phase 7: persistent identity keys (proof-of-possession at join) ---
@@ -498,9 +528,14 @@ io.on('connection', (socket) => {
         }
 
         // 4. Success State
-        users.set(socket.id, { nick, about, publicKey, identityKey, presence: 'active' });
+        users.set(socket.id, { nick, about, publicKey, identityKey, fingerprint, presence: 'active' });
         nicksInUse.add(nick);
         nickBindings.set(nick, fingerprint);
+        // Track this socket under its identity for the replay cache's
+        // reference count (the cache is keyed on the fingerprint, so it
+        // survives across this identity's concurrent sockets and is only
+        // released when the last one leaves - see identityLeft).
+        identityJoined(fingerprint);
         // Evict oldest entry if the binding cap is reached. Map iteration is
         // insertion-ordered, so the first key is the oldest. Only evicts when
         // this set actually grew the map (reconnecting with the same nick
@@ -588,11 +623,11 @@ io.on('connection', (socket) => {
             console.log(`> Rejected message with invalid signature from ${user.nick}`);
             return;
         }
-        if (isReplay(socket.id, signature)) {
+        if (isReplay(user.fingerprint, signature)) {
             console.log(`> Rejected replayed message from ${user.nick}`);
             return;
         }
-        rememberSignature(socket.id, signature);
+        rememberSignature(user.fingerprint, signature);
 
         if (isPrivate && recipientId) {
             io.to(recipientId).emit('private_message', {
@@ -653,10 +688,6 @@ io.on('connection', (socket) => {
             connectionsByIp.set(ip, remaining);
         }
 
-        // Drop this socket's replay cache - its signatures are no longer
-        // valid after disconnect (the identity binding resets on rejoin).
-        forgetReplayCache(socket.id);
-
         // If they were mid-call (or mid-ring), tell everyone they were
         // connected to - could be several people now, in a group call
         const peerIds = endAllSessionsFor(socket.id);
@@ -665,7 +696,15 @@ io.on('connection', (socket) => {
         const leavingUser = users.get(socket.id);
 
         users.delete(socket.id);
-        if (leavingUser) nicksInUse.delete(leavingUser.nick);
+        if (leavingUser) {
+            nicksInUse.delete(leavingUser.nick);
+            // Release this socket's claim on its identity's replay cache.
+            // The cache is keyed on the identity fingerprint and shared
+            // across every socket of that identity, so it's only dropped
+            // once the LAST socket for this identity disconnects - a second
+            // tab stays protected while the first goes away.
+            identityLeft(leavingUser.fingerprint);
+        }
         // socket.broadcast.emit (see the note in the 'join' handler above):
         // socket.to() with no room argument targets room `undefined` and
         // delivers to nobody. Using broadcast so everyone-but-this-socket
@@ -885,8 +924,8 @@ socket.on('file_offer', ({ recipientId, transferId, offer, timestamp, signature 
     if (!isValidBlob(signature, MAX_SIG_BLOB) || typeof timestamp !== 'number') return;
     if (Math.abs(Date.now() - timestamp) > MESSAGE_TIMESTAMP_SKEW_MS) return;
     if (!verifyStringSignature(sender.identityKey, `${timestamp}:${offer}`, signature)) return;
-    if (isReplay(socket.id, signature)) return;
-    rememberSignature(socket.id, signature);
+    if (isReplay(sender.fingerprint, signature)) return;
+    rememberSignature(sender.fingerprint, signature);
 
     io.to(recipientId).emit('file_offer', { senderId: socket.id, transferId, offer, timestamp, signature });
 });
@@ -899,8 +938,8 @@ socket.on('file_answer', ({ recipientId, transferId, answer, timestamp, signatur
     if (!isValidBlob(signature, MAX_SIG_BLOB) || typeof timestamp !== 'number') return;
     if (Math.abs(Date.now() - timestamp) > MESSAGE_TIMESTAMP_SKEW_MS) return;
     if (!verifyStringSignature(sender.identityKey, `${timestamp}:${answer}`, signature)) return;
-    if (isReplay(socket.id, signature)) return;
-    rememberSignature(socket.id, signature);
+    if (isReplay(sender.fingerprint, signature)) return;
+    rememberSignature(sender.fingerprint, signature);
 
     io.to(recipientId).emit('file_answer', { senderId: socket.id, transferId, answer, timestamp, signature });
 });
