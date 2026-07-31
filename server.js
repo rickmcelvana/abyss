@@ -1033,4 +1033,23 @@ server.listen(PORT, '127.0.0.1', () => {
     console.log(`> Connect rate per IP: ${MAX_CONNECT_RATE_PER_IP}/${CONNECT_RATE_WINDOW_MS}ms`);
     console.log(`> CORS origin: ${ALLOWED_ORIGIN}`);
     console.log(`> Proxy trust: ${trustProxyConfig !== false ? trustProxyConfig : 'off'}`);
+
+    // M3: Warn about a silent misconfiguration. ALLOWED_ORIGIN being set
+    // implies a production deployment, which in turn implies a reverse
+    // proxy (nginx, cloudflared, ngrok, ...) in front of this server.
+    // Without TRUST_PROXY, socket.handshake.address is the proxy's IP for
+    // every connection, so the per-IP concurrent-connection cap and the
+    // per-IP connect-rate limit both collapse to "N across the entire
+    // proxied user base" — effectively unbounded per real client. This
+    // is a config footgun, not a code defect; surface it loudly.
+    if (ALLOWED_ORIGIN !== '*' && trustProxyConfig === false) {
+        console.warn('********************************************************');
+        console.warn('* WARNING: ALLOWED_ORIGIN is set (production-looking)   *');
+        console.warn('* but TRUST_PROXY is unset. Behind a reverse proxy,    *');
+        console.warn('* the per-IP connection cap and connect-rate limit are  *');
+        console.warn('* INEFFECTIVE (every client appears as the proxy IP).  *');
+        console.warn('* Set TRUST_PROXY=<number of proxies in front> (e.g. 1) *');
+        console.warn('* so socket.handshake.address reflects the real client.*');
+        console.warn('********************************************************');
+    }
 });

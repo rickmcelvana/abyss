@@ -173,12 +173,24 @@ Verification:
 - `node test-replay-cache.js` (7/7), `node test-rsa-key-strength.js` (7/7), `node test-identity-crypto.js` (7/7), `node test-turn-hmac.js` (7/7) — unaffected, pass.
 - The change is receiver-side only; the server relay and the sender's `startFileTransfer` (which legitimately uses `file.name`/`file.type` from the OS file picker) are unchanged. A conforming sender's real filename is preserved unless it contains path separators or control chars, in which case it's cleaned rather than rejected.
 
-### M3. `socket.handshake.address` is used for the per-IP cap and rate limit, but TRUST_PROXY defaults to off
+### M3. `socket.handshake.address` is used for the per-IP cap and rate limit, but TRUST_PROXY defaults to off  ✅ FIXED
 `server.js:379-385`, `server.js:395-402`
 
 Without `TRUST_PROXY`, every connection behind a reverse proxy appears to come from the proxy's IP, so the per-IP cap collapses to "max `MAX_CONNECTIONS_PER_IP` sockets across the *entire* proxied user base." The README documents `TRUST_PROXY`, but the default is the insecure-for-production value, and there is no startup warning when `ALLOWED_ORIGIN` is set (implying production) but `TRUST_PROXY` is not.
 
 **Fix:** at startup, if `ALLOWED_ORIGIN` is set (production-looking) and `TRUST_PROXY` is unset, log a prominent warning that the per-IP cap is ineffective behind a proxy unless `TRUST_PROXY` is configured. Low-effort, prevents a silent misconfiguration.
+
+**Resolution (applied in this change):** Added a startup warning block in the `server.listen` callback in `server.js`. When `ALLOWED_ORIGIN` is set (anything other than the dev default `'*'`, i.e. production-looking) **and** `TRUST_PROXY` is unset (`trustProxyConfig === false`), the server prints a boxed `console.warn` banner to stderr explaining that behind a reverse proxy the per-IP connection cap and per-IP connect-rate limit are ineffective (every client appears as the proxy's IP) and directing the operator to set `TRUST_PROXY=<number of proxies in front>`. This is a config footgun, not a code defect — the cap/rate-limit code is correct — so the fix is to surface the misconfiguration loudly rather than change defaults (the dev-friendly default of `TRUST_PROXY=off` is intentional and documented; silently enabling `trustProxy` would let a spoofed `X-Forwarded-For` from a *direct* client bypass the cap entirely).
+
+The warning is gated on `ALLOWED_ORIGIN !== '*'` rather than a separate `PRODUCTION=1` flag (none exists) because `ALLOWED_ORIGIN` is the existing signal that the operator is running a real deployment; a pure-localhost dev server leaves it unset and sees no warning. The banner uses `console.warn` so it lands on stderr alongside other diagnostics and is hard to miss in a `journalctl`/container log stream.
+
+Verification:
+- `node --check server.js` — passes.
+- Manual run with `ALLOWED_ORIGIN=https://abyss.example.com` and no `TRUST_PROXY` — the boxed warning prints to stderr as expected. With `TRUST_PROXY=1` set, no warning. With `ALLOWED_ORIGIN` unset (dev), no warning.
+- `node test-access-control.js` — all 9 tests pass; the server boots cleanly and the warning logic does not interfere with connection handling.
+- `node test-turn-hmac.js`, `node test-identity-crypto.js`, `node test-rsa-key-strength.js`, `node test-replay-cache.js` — unaffected, pass.
+
+No protocol change, no client change, no migration. The warning is startup-only and prints nothing on the request hot path.
 
 ### M4. No `pingTimeout`/`pingInterval` or `maxHttpBufferSize` hardening on Socket.IO
 `server.js:104-112`
@@ -278,7 +290,7 @@ Bounded by `MAX_GROUP_SIZE = 4` per socket. Fine.
 | H3 | High (✅ fixed) | `client.js:331`, `server.js` join | Server rejects <RSA-2048 session keys at join; client throws on import |
 | M1 | Medium (✅ fixed) | `server.js:572` | `timestamp` now checked with `Number.isFinite` (rejects NaN/±Infinity) |
 | M2 | Medium (✅ fixed) | `client.js:3522,3322` | Sanitize filename, force `application/octet-stream` blob type, tighten size check |
-| M3 | Medium | `server.js:100` | Warn when `ALLOWED_ORIGIN` set but `TRUST_PROXY` unset |
+| M3 | Medium (✅ fixed) | `server.js:1028` | Startup warning when `ALLOWED_ORIGIN` set but `TRUST_PROXY` unset |
 | M4 | Medium | `server.js:104` | Set `maxHttpBufferSize`, `pingInterval`, `pingTimeout` |
 | M5 | Medium | `server.js:38` | `express.json()` is unused; remove or set `limit` |
 | M6 | Medium | `server.js:75` | TURN username is the public socket id; add randomness |
