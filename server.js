@@ -527,7 +527,16 @@ io.on('connection', (socket) => {
         // instead of re-broadcasting the full list. Every connected client
         // already knows its own identityKey, so only the new user's identity
         // key needs to travel.
-        socket.to().emit('user_joined', userEntry);
+        //
+        // socket.broadcast.emit (not socket.to().emit) targets every
+        // connected socket EXCEPT this one. socket.to(room) narrows a
+        // broadcast to a room; called with no argument it targets a room
+        // named `undefined` that no socket ever joins, so the packet is
+        // delivered to nobody. The previous socket.to().emit('user_joined'...)
+        // therefore silently dropped the event entirely - existing clients
+        // never learned about a newcomer (or the newcomer's identityKey)
+        // until some other code path re-broadcast the list.
+        socket.broadcast.emit('user_joined', userEntry);
 
         // Tell this specific client they are in
         socket.emit('joined_success');
@@ -657,7 +666,11 @@ io.on('connection', (socket) => {
 
         users.delete(socket.id);
         if (leavingUser) nicksInUse.delete(leavingUser.nick);
-        socket.to().emit('user_left', { id: socket.id, nick: leavingUser?.nick });
+        // socket.broadcast.emit (see the note in the 'join' handler above):
+        // socket.to() with no room argument targets room `undefined` and
+        // delivers to nobody. Using broadcast so everyone-but-this-socket
+        // actually learns the user left.
+        socket.broadcast.emit('user_left', { id: socket.id, nick: leavingUser?.nick });
         console.log(`> Disconnected: ${socket.id}`);
     });
 //call

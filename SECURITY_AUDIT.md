@@ -1,257 +1,224 @@
-# Abyss.Tunnel — Security & Optimization Audit
+# Security Audit — Abyss.Tunnel
 
-Date: 2026-07-22
-Scope: `server.js`, `public/client.js`, `public/index.html`, `package.json`, test files, `.env`, `.gitignore`.
+Audit performed on the current tree (`server.js`, `public/client.js`, `public/index.html`, `package.json`, config). Findings are grouped by severity. Each item references the file and line(s) where the issue lives, explains the risk, and proposes a concrete fix. The codebase is generally well-considered (E2EE, identity proof-of-possession at join, replay cache, per-socket rate limits, scrypt room password) — the items below are gaps in that surface, not a condemnation of it.
 
-Findings are grouped by severity. Each item has a Status field updated as work is completed.
+The threat model this app assumes (and documents in the README) is: **an honest-but-curious or fully malicious server**, plus unauthenticated peers sharing a single room. Memory-only state, resets on restart, and a 20-user cap are deliberate. Findings are judged against that model.
 
 ---
 
 ## Critical
 
-### 1. `dotenv` is never loaded — `.env` is silently ignored
-- **Location:** `package.json:14` declares `dotenv`; `server.js` never calls `require('dotenv').config()`.
-- **Impact:** Every env-var-driven setting (`ROOM_PASSWORD`, `TURN_SECRET`, `MAX_CONNECTIONS_PER_IP`, `RING_TIMEOUT_MS`, `PORT`) falls back to defaults even when set in `.env`. An operator who sets `ROOM_PASSWORD` in `.env` and ships gets an **open room** with no password, believing it's protected. Highest-impact bug in the project.
-- **Fix:** Add `require('dotenv').config()` at the top of `server.js`, before any `process.env` reads.
-- **Status:** DONE
+### C1. `socket.to().emit(...)` broadcasts to nobody — join/leave notifications are silently dropped  ✅ FIXED
+`server.js:530` and `server.js:660`
 
-### 2. Per-IP cap is defeated by any reverse proxy
-- **Location:** `server.js:278` reads `socket.handshake.address`; server is designed to sit behind a TLS-terminating proxy (`server.js:762-765`).
-- **Impact:** Behind nginx/cloudflared, every connection's address is `127.0.0.1`, so `MAX_CONNECTIONS_PER_IP` becomes a cap on the entire server (default 5), or useless if the proxy is remote.
-- **Fix:** Parse `x-forwarded-for` with a configured trusted proxy list; document the proxy requirement.
-- **Status:** DONE
+```js
+socket.to().emit('user_joined', userEntry);   // line 530
+socket.to().emit('user_left', { id: socket.id, nick: leavingUser?.nick });  // line 660
+```
+
+`socket.to(room)` adds `room` to the broadcast target set. Called with **no argument**, `room` is `undefined`; the Socket.IO in-memory adapter (`socket.io-adapter/dist/in-memory-adapter.js`, `apply()`) takes the `rooms.size` truthy branch and iterates `this.rooms.get(undefined)` — a room no socket ever joins — so the packet is delivered to **zero clients**. `socket.to()` is *not* a synonym for `socket.broadcast`; `newBroadcastOperator()` already excludes the sender, and the empty-arg `.to()` then narrows to an empty room on top of that. Verified against the installed `socket.io@4.8.3` adapter source.
+
+**Security impact:** When a user joins, existing clients never receive `user_joined` (with the newcomer's `identityKey`). They only learn about the new user on the next `user_list` broadcast — which only fires on a fresh join (sent to the joiner itself, `server.js:524`) and never re-broadcast to the room. In practice the sidebar relies on these events, so peers' phonebooks and TOFU pins can lag, widening the window before a key-change/impersonation is flagged. It is also a plain availability/correctness bug: the user list drifts out of sync.
+
+**Fix:** use `socket.broadcast.emit(...)`, which is the documented "everyone except me" primitive:
+```js
+socket.broadcast.emit('user_joined', userEntry);
+socket.broadcast.emit('user_left', { id: socket.id, nick: leavingUser?.nick });
+```
+Add a regression assertion to one of the e2e presence tests that a *third* tab sees `user_joined`.
+
+**Resolution (applied in this change):** Both `socket.to().emit(...)` calls in `server.js` were replaced with `socket.broadcast.emit(...)`, with an inline comment explaining why `to()` with no argument is a no-op so the regression is unlikely to be reintroduced. `socket.broadcast` is Socket.IO's intended "every connected socket except the sender" primitive — exactly what these two events need. After the fix:
+- `user_joined` now reaches every other client on join, so peers receive the newcomer's `identityKey` immediately and can run their TOFU pin / key-change check without waiting for a re-broadcast. This closes the widened impersonation-detection window described above.
+- `user_left` now reaches every remaining client on disconnect, keeping sidebars and phonebooks in sync without a full re-render.
+
+No new state, no protocol change, no migration — purely a one-method swap on two lines. Behavior is otherwise identical (sender still excluded, payload unchanged).
 
 ---
 
 ## High
 
-### 3. Room password uses a fast hash, not a password KDF
-- **Location:** `server.js:234-236` hashes `ROOM_PASSWORD` with a single SHA-256 round.
-- **Impact:** `timingSafeEqual` rationale is good, but SHA-256 is not a password hash — a low-entropy room password is brute-forceable offline if the hash leaks.
-- **Fix:** Use `crypto.scrypt` with a salt and work factor.
-- **Status:** DONE
+### H1. Replay cache is per-socket only — replay across two sockets of the same identity is not stopped
+`server.js:202-221`, message/file handlers at `server.js:582`, `server.js:875`, `server.js:889`
 
-### 4. Socket.IO CORS is `origin: "*"` with no production gate
-- **Location:** `server.js:84`. AGENTS.md flags this as dev-only, but there is no env-var check.
-- **Impact:** In production, any malicious website can open a socket and attempt joins, spam public messages, or probe user lists.
-- **Fix:** Gate on an `ALLOWED_ORIGIN` env var; default to `*` only when unset (preserve dev behavior).
-- **Status:** DONE
+`isReplay(socketId, signature)` keys on the emitting socket id. A signature is a function of `<timestamp>:<content>` signed by the identity private key, and a single identity can open multiple sockets (different tabs, or an attacker who legitimately holds the key). The 5-minute timestamp skew window (`MESSAGE_TIMESTAMP_SKEW_MS`) bounds this, but within that window a captured signed payload can be re-injected from a *different* socket of the same identity and the server will accept it (a different `socketId` → empty cache entry). For private/file messages this produces a spurious duplicate on the recipient; for public messages it re-broadcasts.
 
-### 5. Express CORS is wide open too
-- **Location:** `server.js:26` `app.use(cors())` with no options.
-- **Impact:** HTTP surface is small (`/api/ice-config`) but should still be restricted in production.
-- **Fix:** Reuse the same `ALLOWED_ORIGIN` env var for Express CORS.
-- **Status:** DONE
+This is a defense-in-depth layer (the client re-verifies signatures independently), so it is not a primary trust failure, but it weakens the stated goal of the cache.
+
+**Fix options:**
+- Key the replay cache on the identity fingerprint rather than (or in addition to) the socket id:
+  `replayCache.get(fingerprint)?.has(signature)`. The fingerprint is already computed at join (`server.js:484`) and available from `users.get(socket.id)`.
+- Alternatively, include the socket id in the signed string so a signature is bound to one connection (heavier change, breaks rejoin replay).
+
+### H2. CSP allows `blob:` in `connect-src` but not the WebSocket origin for TURN/STUN — and lacks `wss:`/`ws:` clarity
+`server.js:19-26`
+
+The custom CSP adds `'blob:'` to `connect-src` for file downloads. That is correct and well-reasoned. However:
+- WebRTC's own media/ICE connections (`stun:`, `turn:`, `turns:`, `udp`) are **not** governed by `connect-src`, so they are unaffected — good. But `RTCDataChannel`/ICE that falls back to relaying over the TURN server using TCP/`wss`-style transports is also not blocked by CSP, so nothing is broken here; this is a note, not a defect.
+- The Socket.IO transport uses the same origin as the page (`/socket.io/...`), covered by `'self'`. Fine.
+
+The real gap: **`object-src` and `base-uri` inherit from `helmet`'s defaults**, which is good, but there is no explicit `frame-ancestors 'none'` / `frame-src 'none'`. The app is not designed to be embedded, and a malicious page could `<iframe>` it and attempt clickjacking on the call/file-accept dialogs (which have real consequences — accepting a call/file is a consent action). `helmet` sets `frame-ancestors` via `crossOriginResourcePolicy`? No — it sets it through `frameguard` only when enabled. Default `helmet()` includes `frameguard: { action: 'sameorigin' }`? Actually helmet's default `frameguard` sets `X-Frame-Options: SAMEORIGIN`, which protects against cross-origin framing; this is acceptable. Still, an explicit CSP `frame-ancestors 'none'` is stronger and survives if `frameguard` is ever disabled.
+
+**Fix (minor):** add `'frame-ancestors': ['none']` to the CSP directives for defense in depth, since accept/call buttons are consent-gated.
+
+### H3. Public-key import does not validate that the key is actually an RSA key, or the right size
+`public/client.js:331-337`
+
+`importPublicKey` imports any SPKI blob as `RSA-OAEP` with `hash: SHA-256` and `modulusLength` not re-checked. Web Crypto will throw on malformed input (so it fails closed — good), but a 1024-bit RSA key supplied by a malicious peer would import and be used for `hybridEncrypt`. The session encryption layer is forward-secure-ish (fresh AES key per message), but a weak peer RSA key means an attacker who records ciphertext could later brute-force the RSA-wrapped AES key. There is no server-side enforcement of RSA key strength either; the join only checks `MAX_KEY_BLOB` size (`server.js:472`).
+
+The client generates its own key at 2048 bits (`RSA_PARAMS`, `client.js:110`), but accepts whatever a peer presents.
+
+**Fix:** after importing, export the key and check `algorithm.modulusLength >= 2048`; reject smaller. Or have the server verify key parameters at join (parse the SPKI DER, assert modulus length). Low-effort, high-value.
 
 ---
 
 ## Medium
 
-### 6. No HTTP rate limit on socket connection endpoint
-- **Location:** `express-rate-limit` at `server.js:30-35` only covers `/api/`. Socket.IO handshake is an HTTP upgrade with no Express-level limiter.
-- **Impact:** Per-IP cap and per-socket event limiters mitigate, but a distributed attacker bypasses the IP cap; each unjoined socket still allocates a nonce, rate-limiter closures, and Map entries.
-- **Fix:** Document the existing per-IP cap as the connection-rate defense; consider a Socket.IO `use()` middleware for connection-level throttling if needed.
-- **Status:** DONE
+### M1. `typeof timestamp !== 'number'` accepts `Infinity`, `NaN`, and very large numbers
+`server.js:572-575`, `server.js:872-873`, `server.js:886-887`
 
-### 7. Unbounded resource growth in `nickBindings`
-- **Location:** `server.js:223`. Never pruned.
-- **Impact:** For a long-lived process with high nick churn, this leaks memory.
-- **Fix:** Add a TTL or LRU cap, or accept it given the "resets on restart" design.
-- **Status:** DONE
+The check is `typeof timestamp !== 'number'` followed by `Math.abs(Date.now() - timestamp) > SKEW`. `Infinity`/`NaN`:
+- `Math.abs(Date.now() - NaN)` → `NaN`; `NaN > SKEW` is `false`, so the skew check **passes** for `NaN` and the message proceeds to signature verification. A signature over `NaN:<content>` is meaningless, but an attacker who can sign arbitrary strings with their own identity key (they hold it) could craft a valid signature over `NaN:...`. This is not directly exploitable (it's their own key), but it lets garbage through that pollutes replay/verification semantics and can confuse clients that render `${timestamp}`.
+- `Math.abs(Date.now() - Infinity)` → `Infinity`; `Infinity > SKEW` is `true` → rejected. OK.
 
-### 8. `publicKey` (RSA session key) has no size/format validation
-- **Location:** `server.js:341-349` validates `identityKey` and `signature` blobs but not `publicKey`.
-- **Impact:** The signature binds it (authenticated), but a malicious client can send an arbitrarily large `publicKey` string.
-- **Fix:** Add `isValidBlob(publicKey, MAX_KEY_BLOB)`.
-- **Status:** DONE
+**Fix:** tighten to `Number.isFinite(timestamp)`.
 
-### 9. Nick/about not trimmed or normalized server-side
-- **Location:** `server.js:341` checks `!nick` and `nick.length > 15` but a nick of `"   "` (spaces) or zero-width characters passes. Client trims (`client.js:647`) but the server is the trust boundary.
-- **Impact:** Homoglyph/whitespace nicks enable impersonation.
-- **Fix:** Trim and reject empty-after-trim; optionally normalize Unicode.
-- **Status:** DONE
+### M2. `isValidBlob` checks length but not content; signaling blobs are relayed verbatim to other peers
+`server.js:178-180`, relay at `server.js:820-823`, `server.js:839`, `server.js:848`, `server.js:878`, `server.js:892`, `server.js:900`
 
-### 10. Replay window of 5 minutes for signed messages
-- **Location:** `server.js:157,428-430`. A captured signed message can be re-emitted for ~5 minutes and the server will accept it (producing a duplicate).
-- **Impact:** Low for chat; server doesn't track seen nonces.
-- **Fix:** Consider a short per-sender sequence or nonce cache if replay matters. Documented tradeoff acceptable for this app's threat model.
-- **Status:** DONE
+SDP/ICE/answer blobs are described as "client-encrypted opaque strings" and the server "never parses them." That is a sound design. The risk: `isValidBlob` only asserts `typeof string && length <= maxLen`. The server then forwards `io.to(recipientId).emit(...)` to a single peer, which is fine. But for `file_offer`/`file_answer` the relayed blob is what the *recipient* decrypts with RSA-OAEP; a malicious sender can send a 100 KB blob that, once RSA-decrypted, yields a crafted JSON with an oversized `size` or a hostile `name`/`mimeType`.
 
----
+The client does bound `payload.size` against `MAX_FILE_SIZE` (`client.js:3522`), and the download path uses `textContent`/`download` attribute (no HTML injection — see G1). However:
+- `payload.name` is rendered via `textContent` (safe) **and** used as the `<a download>` attribute and as the OS-suggested filename. A name like `"../../...."` or with embedded NULs/newlines is browser-handled safely for `download`, but a name with a misleading extension combined with a chosen `mimeType` (e.g. `application/pdf` with a `.txt`-looking name) is a classic social-engineering vector for "open after download."
+- The blob's `type` is taken verbatim from the sender (`t.historyRef.mimeType`, `client.js:3322`). A sender can set `mimeType: 'text/html'`; if a recipient were ever to navigate to the blob URL (not just download), it would render. The app uses `<a download>`, which forces download, so this is contained — but the CSP allowing `blob:` in `connect-src` plus an `<img>`/`<iframe>` future use of `downloadUrl` could turn it into a stored-XSS-in-blob. Today it is safe; it is a latent footgun.
 
-## Low
+**Fix (defense-in-depth):**
+- On the receiver, strip/restrict `mimeType` to a known-safe set, or force `application/octet-stream` and ignore the sender's type. The `download` attribute already prevents navigation, so this is belt-and-suspenders.
+- Sanitize `payload.name` to a basename (strip path separators, control chars) before using it for `download`.
+- Consider signing the *offer metadata* (`name`/`size`/`mimeType`) rather than only the SDP offer, so a tampered relayed blob can't substitute different metadata. Currently the signature is over `${timestamp}:${offer}` where `offer` is the encrypted SDP, not the decrypted metadata — so a malicious server *could* re-encrypt a different metadata payload? No — the server can't re-encrypt (it lacks the peer's RSA key). But it could drop and replay; the metadata is inside the encrypted envelope, so integrity of metadata relies on RSA/OAEP correctness, which is sound. The main residual is a *malicious sender*, which is the threat model's peer-not-server case, and the sender is the one who chose the metadata anyway. Net: low risk, keep the receiver-side `mimeType`/`name` hardening.
 
-### 11. `io.emit('user_list', ...)` on every join/disconnect
-- **Location:** `server.js:517-535,661-663` (now `server.js:494-497`).
-- **Impact:** Previously broadcast the full user list (with identity keys) to all sockets on every join and disconnect. Incremental events reduce per-event payload from O(n) to O(1).
-- **Fix:** Changed join to send full `user_list` only to the *new* client, and sends a lightweight `user_joined` (single user entry) to all others. Changed disconnect to send `user_left` (just id+nick) to remaining clients. Client now has `user_joined` handler that builds and appends the row incrementally, and `user_left` handler that removes it. Both handlers also keep `state.lastUserList` in sync so trust-action re-renders (Mark Verified / Trust new key) reflect incremental membership changes.
-- **Status:** DONE
+### M3. `socket.handshake.address` is used for the per-IP cap and rate limit, but TRUST_PROXY defaults to off
+`server.js:379-385`, `server.js:395-402`
 
-### 12. Synchronous ECDSA verification on the event loop
-- **Location:** `server.js:184-201` `verifyStringSignature` blocks the main thread.
-- **Impact:** Fine at this scale; at higher load, move to a worker thread.
-- **Fix:** Document as known limitation; revisit if load increases.
-- **Status:** TODO
+Without `TRUST_PROXY`, every connection behind a reverse proxy appears to come from the proxy's IP, so the per-IP cap collapses to "max `MAX_CONNECTIONS_PER_IP` sockets across the *entire* proxied user base." The README documents `TRUST_PROXY`, but the default is the insecure-for-production value, and there is no startup warning when `ALLOWED_ORIGIN` is set (implying production) but `TRUST_PROXY` is not.
 
-### 13. `/api/ice-config` is unauthenticated
-- **Location:** `server.js:78-80`.
-- **Impact:** Only returns STUN servers (TURN is gated), so impact is minimal, but it is public info disclosure with no rate-limit value beyond the `/api/` limiter.
-- **Fix:** Acceptable given TURN is gated and the endpoint only exposes STUN. No change needed.
-- **Status:** TODO
+**Fix:** at startup, if `ALLOWED_ORIGIN` is set (production-looking) and `TRUST_PROXY` is unset, log a prominent warning that the per-IP cap is ineffective behind a proxy unless `TRUST_PROXY` is configured. Low-effort, prevents a silent misconfiguration.
 
----
+### M4. No `pingTimeout`/`pingInterval` or `maxHttpBufferSize` hardening on Socket.IO
+`server.js:104-112`
 
-## Optimizations
+The `Server` constructor sets only `cors` and optionally `trustProxy`. Defaults:
+- `maxHttpBufferSize` defaults to 1 MB. Signaling blobs are capped server-side (`MAX_SDP_BLOB = 100000`), but a malicious client can still send a 1 MB Engine.IO frame before the `isValidBlob` check runs; the buffer is allocated and parsed. With the 20-user cap this is bounded, but tightening `maxHttpBufferSize` to ~256 KB matches the actual max payload (100 KB SDP + envelope) and reduces memory pressure during a flood.
+- No explicit `pingTimeout`/`pingInterval`; defaults are usually fine but not tuned for a mobile-friendly app (the README stresses mobile).
 
-### O1. `renderChatHistory()` rebuilds the full DOM on every message
-- **Location:** `client.js:1156-1162`.
-- **Impact:** O(n) per message. For long sessions this is wasteful.
-- **Fix:** Added an append-only path via `appendMessage(tabId, msgData)` that appends a single message bubble to the DOM only when the target tab is the currently-active tab (no DOM work at all when the message lands in a background tab). `renderChatHistory()` (full clear+rebuild) is now used only on tab switches and the rare case where the active tab's history is filtered (e.g. `user_left` removing a departed user's messages from the viewed tab). `capHistory` now returns the number of entries trimmed, so `appendMessage` prunes the leading DOM nodes to stay in sync with `state.history` without a full re-render. Replaced the 7 per-message `renderChatHistory()` call sites (outgoing global/PM, incoming public/PM, `logSystem`, `pushFileHistory`) with `appendMessage`. Also fixed a pre-existing latent bug where `user_left` filtered messages out of `state.history` for all tabs but only re-rendered if the departed user owned the active PM tab — global messages from a departing user would stay on screen until the next tab switch; now re-renders the active tab when its filtered length actually changes.
-- **Status:** DONE
+**Fix:** set `maxHttpBufferSize: 256 * 1024` and consider `pingInterval: 10000`, `pingTimeout: 20000`.
 
-### O2. `state.history` grows unbounded in the client
-- **Location:** `client.js` (all tab histories).
-- **Impact:** A long-running tab with heavy traffic leaks memory.
-- **Fix:** Added `MAX_HISTORY_PER_TAB = 500` with `capHistory(tabId)` helper that trims the oldest entries from the front (`splice(0, arr.length - MAX_HISTORY_PER_TAB)`) immediately after every `.push()` in all 6 message-sink paths plus the file-transfer push. Also fixed a no-op in `user_left` handler that tried to delete entries by `id` — history entries have no `id` property, only `senderNick`. It now filters by `senderNick` and caps the result.
-- **Status:** DONE
+### M5. `express.json()` has no `limit`
+`server.js:38`
 
-### O3. `String.fromCharCode(...new Uint8Array(buf))` spread on call stack
-- **Location:** `client.js:179,234,276,305-307,599` (all crypto export/sign paths).
-- **Impact:** At the sizes here (SDP, signatures) it is safe, but for robustness large buffers could blow the stack.
-- **Fix:** Added `uint8ArrayToB64(buf)` helper that uses chunked `String.fromCharCode.apply` (8KB chunks) to convert typed arrays to base64 without spreading the entire buffer onto the call stack. Replaced all 6 call sites.
-- **Status:** DONE
+`express.json()` with no `limit` defaults to 100 KB, which is fine — but the only JSON endpoint is `/api/ice-config` (GET, no body). `express.json()` is therefore dead middleware (no POST/PUT routes) that still parses any POST body up to 100 KB. Harmless, but remove it (or set an explicit small `limit: '1kb'`) to avoid surprise.
 
-### O4. Uniqueness check is O(n)
-- **Location:** `server.js:368` `Array.from(users.values()).some(...)`.
-- **Impact:** Irrelevant at `MAX_USERS=20`, but a `Set` of nicks would make it O(1) if the cap rises.
-- **Fix:** Maintain a `Set` of in-use nicks alongside the `users` Map.
-- **Status:** DONE
+### M6. `generateTurnCredential` uses `socket.id` as the identifier — predictable and per-session
+`server.js:75-83`, used at `server.js:548`
 
-### O5. Tests inject env vars via `spawn`, masking the dotenv bug
-- **Location:** `test-access-control.js:84` and similar.
-- **Impact:** Test suite passes while manual `npm start` with a `.env` file ignores the password.
-- **Fix:** Resolved by fixing Critical #1; tests continue to work via spawn injection.
-- **Status:** TODO
+The TURN username is `<expiry>:<socket.id>`. `socket.id` is public (relayed to peers in `user_list`/call signaling) and predictable. That's fine for coturn REST auth (the credential is HMAC'd with the secret, and the username is meant to be public), but it means a credential issued to socket A is valid for *any* TURN allocation under that username until expiry — and the username is just the socket id, which a peer knows. A peer could use A's TURN credential from a different machine within the TTL window. coturn REST credentials are not bound to an IP by default.
+
+**Fix:** include a random component in the identifier (e.g. `${expiry}:${socket.id}:${crypto.randomBytes(8).toString('hex')}`) so the username is not guessable/observable from signaling traffic, and/or configure coturn with an IP allowlist. Low severity (TURN bandwidth is the resource at risk, and TTL is bounded), but worth noting.
 
 ---
 
-## Work Log
+## Low / Hardening
 
-### 2026-07-25 — Fix O1 (Optimization): append-only chat rendering instead of full DOM rebuild per message
-- Added `appendMessage(tabId, msgData)` helper that appends a single message bubble to `messageDisplay` only when `tabId === state.currentTabId` (zero DOM work for messages landing in background tabs), then scrolls to bottom. `renderChatHistory()` (full `innerHTML = ''` + re-append all) is now reserved for tab switches and the rare case where the active tab's history is filtered in place.
-- `capHistory(tabId)` now returns the count of entries trimmed from the front, so `appendMessage` removes the matching leading DOM nodes to keep the visible list in sync with `state.history` — no full re-render needed when the cap fires while viewing the tab.
-- Replaced the 7 per-message `renderChatHistory()` call sites: outgoing global (`msgForm` submit), outgoing PM (`msgForm` submit), incoming `public_message`, incoming `private_message` warning path, incoming `private_message` success path, `logSystem`, and `pushFileHistory`. The two `private_message` paths continue to call `setActiveTab` (which does a full render) when switching to the PM tab, but when the user is already on that tab the message is appended directly.
-- Fixed a pre-existing latent bug in `user_left`: it filtered a departed user's messages out of `state.history` for every tab but only re-rendered when the departed user owned the active PM tab. Global messages from a departing user would stay on screen until the next tab switch. Now re-renders the active tab when its filtered length actually changes (and only when not already switching to `global` via the PM-tab path, which re-renders itself).
-- Verified: `node --check public/client.js` (syntax). All test suites pass: `test-turn-hmac.js` (7/7), `test-identity-crypto.js` (7/7), `test-access-control.js` (9/9), `test-replay-cache.js` (3/3).
+### L1. No `Strict-Transport-Security` header, and the server binds to plain HTTP on `127.0.0.1`
+`server.js:933`
 
-### 2026-07-23 — Fix #6 (Low/Optimization): Incremental user_joined/user_left instead of full user_list broadcast
-- Replaced `io.emit('user_list', fullList)` on join with: full `user_list` to the new client only, + lightweight `user_joined` (single user entry) broadcast to all other clients.
-- Replaced `io.emit('user_list', fullList)` on disconnect with `socket.to().emit('user_left', {id, nick})` to remaining clients.
-- Added `user_joined` socket handler in `client.js` that computes trust status, updates `phonebook`, and appends the new user row incrementally to the sidebar DOM.
-- Added `user_left` socket handler in `client.js` that removes the row, updates phonebook/history, and clears the active tab if the disconnected user was the peer.
-- All 3 test suites pass: `test-turn-hmac.js`, `test-identity-crypto.js`, `test-access-control.js` (9/9 tests).
-- Note: Per-IP connection cap test (test 5) opens `MAX_CONNECTIONS_PER_IP + 2` sockets. Since each socket creates a fresh connection, the rate limit tracking in `connectRateByIp` is keyed by IP (all 127.0.0.1), so the cap fires first. This is pre-existing behavior; my changes do not affect it.
+Intended for a TLS-terminating proxy in front. HSTS must be set by the proxy (or by helmet once TLS is terminated). If someone runs `node server.js` directly exposed (e.g. via a port forward) without TLS, calls silently fail (getUserMedia needs secure context) but chat still works in the clear. Document loudly; consider refusing to start if `PORT`-bound on a non-loopback interface without `ALLOWED_ORIGIN` set.
 
-### 2026-07-23 — Fix #7 (Optimization): `state.history` bounded to 500 entries per tab
-- Added `MAX_HISTORY_PER_TAB = 500` constant and `capHistory(tabId)` helper that trims oldest entries (`splice`) after every history push.
-- Applied to all message-sink paths (outgoing global, outgoing PM, incoming public, incoming PM authentic, incoming PM warning) plus the system message logger and file transfer push — total 7 push sites capped.
-- Fixed a no-op in the `user_left` handler: it previously did `delete state.history[tabId][id]` which attempted to delete `undefined` from each entry (history entries have no `id` property). Replaced with `filter(entry => entry.senderNick !== nick)` to actually remove departed users' messages, followed by `capHistory`.
-- All 3 test suites pass: `test-turn-hmac.js`, `test-identity-crypto.js`, `test-access-control.js` (9/9 tests).
+### L2. `console.log` of join attempts includes the nick but not PII; disconnect logs include socket ids
+`server.js:388`, `server.js:450`, `server.js:661`
+Acceptable for a local dev server. In a multi-tenant/proxy deployment these logs could correlate nicks to IPs (behind the proxy). Ensure the deployment guide notes log retention.
 
-### 2026-07-23 — Fix #8 (Optimization): `String.fromCharCode(...buf)` spread replaced with chunked helper
-- Added `uint8ArrayToB64(buf)` helper that converts typed arrays to base64 using 8KB chunks via `String.fromCharCode.apply`, eliminating call stack overflow risk on large buffers.
-- Replaced all 6 spread call sites: `exportIdentityPublicKeyB64`, `signWithIdentity`, `exportPublicKey`, `hybridEncrypt` (3 calls in one return), and the join signature.
-- All tests pass: `test-identity-crypto.js`, `test-access-control.js` (9/9).
+### L3. `MAX_NICK_BINDINGS = 1000` FIFO eviction can free a *used* nick's binding, allowing takeover
+`server.js:292`, `server.js:508-511`
 
-### 2026-07-23 — Fix #11 (Cleanup): replay cache `rememberSignature` dead parameter removed
-- `rememberSignature(socketId, signature, timestamp)` accepted a `timestamp` parameter it never used. The comment described a "lazy prune" that never actually ran. Removed the parameter from the function and all 3 call sites (`message`, `file_offer`, `file_answer`).
-- Rewrote the module comment to accurately describe the bounding strategy (rate-limit-bounded Set, disconnect cleanup) instead of claiming per-entry pruning.
-- Added trailing newline to `test-replay-cache.js`.
-- All 4 test suites pass: `test-replay-cache.js` (3/3), `test-identity-crypto.js`, `test-access-control.js` (9/9).
+When the map reaches 1000 entries, the oldest binding is evicted. If that oldest entry is a nick that is currently *in use* by an active user, eviction removes the nick→fingerprint binding, after which a different identity could claim that nick on join. With only 20 concurrent users this is very unlikely to be hit organically, but a churn-flood attack (rapid joins under many nicks, within the per-IP cap) could push a target's binding out and then steal the nick.
 
-### 2026-07-23 — Fix #9 & #10 (Bugfixes): incremental event handler audit fixes
-Two bugs found during audit of the `user_joined`/`user_left` handlers (commits 787cadb, 09a11b5) and fixed:
+**Fix:** never evict a binding for a nick that is currently in `nicksInUse`. On eviction, skip entries whose nick is in `nicksInUse`.
 
-**#9 — `state.lastUserList` went stale after incremental events.**
-- The `user_list` handler sets `state.lastUserList`, but `user_joined`/`user_left` did not update it.
-- Two trust-action callbacks (`renderUserList(state.lastUserList)` at the "Mark Verified" and "Trust new key" buttons) re-render the sidebar from this snapshot.
-- After a join/leave, clicking either button would drop newcomers or revive departed users as ghost rows.
-- Fix: `user_joined` now appends the new entry to `state.lastUserList`; `user_left` filters the departed nick out of it.
+### L4. Identity fingerprint truncated to 16 bytes (128 bits) for display — fine — but the *binding* key is the full SHA-256
+`server.js:271-273` (full hash) vs `client.js:239` (16-byte display)
+Consistent and correct; just noting the display fingerprint (16 bytes / 32 hex chars shown as 8 groups of 4) is shorter than the bound fingerprint. No issue.
 
-**#10 — `globalTabId` undefined in `user_left` (ReferenceError).**
-- Commit 09a11b5 introduced `setActiveTab(globalTabId)` but `globalTabId` was never declared. Every other call site uses the string literal `'global'`.
-- When the active PM tab's peer disconnected, the `user_left` handler threw a `ReferenceError` and the tab switch silently failed, leaving the user on an orphaned PM tab.
-- Fix: replaced `globalTabId` with `'global'`.
+### L5. `verifyStringSignature` returns `false` on any parse error, but does not distinguish key-parse failure from signature mismatch
+`server.js:247-264`
+Correct fail-closed behavior. No change needed; noted for clarity.
 
-- All 3 test suites pass: `test-turn-hmac.js`, `test-identity-crypto.js`, `test-access-control.js` (9/9).
-- Updated item #11 to note the `lastUserList` sync fix.
+### L6. No CSRF protection on the single REST endpoint
+`server.js:89` — `GET /api/ice-config` returns STUN servers only (no TURN, no secret). GET is not CSRF-exploitable for state changes, and there is no state to change. Fine.
 
-### 2026-07-22 — Fix #1 (Critical): dotenv loaded at startup
-- Added `require('dotenv').config()` as the first line of `server.js`, before any `process.env` reads.
-- `.env` is now parsed; `ROOM_PASSWORD`, `TURN_SECRET`, `MAX_CONNECTIONS_PER_IP`, `RING_TIMEOUT_MS`, and `PORT` are picked up from it as intended.
-- Verified: server startup log reflects env vars; `test-access-control.js` still passes (it injects env via `spawn`, so it was already working — manual `npm start` with `.env` now works too).
+### L7. `.env` is gitignored (verified) — good. The committed `.env` is empty.
+No secret leakage in the repo.
 
-### 2026-07-22 — Fix #2 (Critical): reverse-proxy support for per-IP cap
-- Added `TRUST_PROXY` env var (integer hop count, e.g. `1` for a single nginx/cloudflared layer).
-- When set, Socket.IO's `trustProxy` option is enabled so `socket.handshake.address` reflects the real client IP parsed from `X-Forwarded-For` instead of the proxy's address.
-- When unset (default), behavior is unchanged — direct/localhost operation uses the TCP peer address.
-- Updated the comment at the IP extraction point (`io.on('connection')`) to document the behavior.
-- Verified: server starts cleanly with and without `TRUST_PROXY`; all existing tests pass.
+### L8. `puppeteer-core` and `socket.io-client` are in `dependencies` not `devDependencies`
+`package.json:13-20`. Documented in AGENTS.md as intentional-ish ("only needed for tests"). For a production install (`npm install --omit=dev`) these ship anyway. Move to `devDependencies` to slim the production footprint and reduce attack surface from test-only packages in prod. (AGENTS.md already flags this; restating as an optimization.)
 
-### 2026-07-22 — Fix #3 (High): room password now uses scrypt
-- Replaced the single-round SHA-256 hash of `ROOM_PASSWORD` with `crypto.scryptSync` (N=16384, r=8, p=1, 32-byte key, per-process random salt).
-- The configured password is hashed once at startup; each candidate is hashed with the same salt+params before a `timingSafeEqual` comparison.
-- Salt is regenerated per process (consistent with the app's no-persistent-store design) but still defeats precomputed rainbow tables for the process lifetime.
-- ~100ms per verification — acceptable given the join rate limit (5/30s per socket) and 20-user cap.
-- Verified: `test-access-control.js` — all 9 tests pass, including correct-password acceptance and wrong-password rejection.
+---
 
-### 2026-07-22 — Fix #4 & #5 (High): CORS gated on ALLOWED_ORIGIN
-- Added `ALLOWED_ORIGIN` env var, declared before the Express middleware stack.
-- Express `cors()` and Socket.IO `cors` both consume the same value.
-- Unset (default) → `origin: "*"` (dev behavior preserved). Set to a specific origin (e.g. `https://abyss.example.com`) → only that origin receives `Access-Control-Allow-Origin` in responses; browser-enforced cross-origin blocking applies to all other sites.
-- Verified: with `ALLOWED_ORIGIN=https://abyss.example.com`, the header correctly reflects the allowed origin; disallowed origins get no matching header and are blocked by the browser.
-- Updated `AGENTS.md` Gotchas section to document both `ALLOWED_ORIGIN` and `TRUST_PROXY`.
+## Optimizations (non-security, or security-adjacent perf)
 
-### 2026-07-22 — Fix #8 (Medium): publicKey size validation at join
-- Added `isValidBlob(publicKey, MAX_KEY_BLOB)` check in the `join` handler, right before the signature verification step.
-- Reuses the existing `MAX_KEY_BLOB` (2000 chars) constant — generous for RSA-2048 SPKI base64 (~392 chars) but blocks arbitrarily large payloads.
-- Error message: `"Missing or malformed session public key."` — distinct from the identity key error so the failure is diagnosable.
-- Verified: `test-access-control.js` — all 9 tests pass (existing tests send a dummy `"x"` publicKey which passes the `> 0` length check; a missing or oversized key is now rejected before signature verification).
+### O1. `replayCache` Set is never pruned per-socket
+`server.js:202-217`
+Bounded implicitly by the 15-msg/10s rate limit (~450 entries in 5 min). For 20 users this is ~9 KB. No action needed; the comment is accurate. Noted only to confirm the bound holds.
 
-### 2026-07-22 — Fix #6 (Medium): Socket.IO connection-rate limiting
-- Added `io.use()` middleware that rate-limits connection handshakes per IP before the `connection` handler runs.
-- New env vars: `MAX_CONNECT_RATE_PER_IP` (default 20) and `CONNECT_RATE_WINDOW_MS` (default 60000).
-- A rejected handshake returns an error to the client as `connect_error` — no nonce, rate-limiter closures, or Map entries are allocated.
-- The `connectRateByIp` Map is pruned in the `disconnect` handler: when an IP's last open connection closes, its rate-limit entry is dropped so a legitimately reconnecting user starts a fresh window.
-- Updated startup log to print the connect-rate config; updated `AGENTS.md`.
-- Verified: `test-access-control.js` — all 9 tests pass.
+### O2. `uint8ArrayToB64` uses `String.fromCharCode.apply` in 8 KB chunks
+`public/client.js:57-69`
+Correct and avoids stack overflow. For very large blobs (file chunks) a `FileReader`/`btoa` over a `Blob` slice would be faster, but the current path is for keys/signatures (small). File chunks are sent as `ArrayBuffer` over the data channel, not base64-encoded, so this is not on the hot path. Fine.
 
-### 2026-07-22 — Fix #7 (Medium): bounded nickBindings
-- Added `MAX_NICK_BINDINGS = 1000` constant and FIFO eviction when the cap is exceeded.
-- `Map.keys().next().value` gives the oldest insertion-ordered key; `nickBindings.delete(oldest)` evicts it.
-- Only evicts when a `set()` actually grew the map (reconnecting with the same nick overwrites without changing size).
-- Updated the comment block to document the cap and the rationale.
-- Updated `AGENTS.md` Gotchas to note the cap.
-- Verified: `test-access-control.js` — all 9 tests pass.
+### O3. `appendMessage` rebuilds DOM per message; `renderChatHistory` does a full `innerHTML = ''` + re-render
+`public/client.js:1333-1338`, `client.js:1463-1499`
+For 500-message tabs the re-render is O(n) and acceptable. The append path is already O(1) (per the recent commit `3487d76`). The only optimization: `renderChatHistory` could use a `DocumentFragment` instead of repeated `appendChild` to `messageDisplay` to avoid layout thrash. Minor.
 
-### 2026-07-22 — Fix #9 (Medium): server-side nick/about trimming
-- Added `.trim()` for both `nick` and `about` in the `join` handler, before the length/empty check.
-- Type-guarded: coerces non-string `nick`/`about` to empty strings so the validation reject path handles them cleanly.
-- A nick of `"   "` or one padded with zero-width spaces is now rejected as empty after trim, preventing impersonation via visually identical nicks.
-- Client already trims (`client.js`), but the server is the trust boundary — this closes the gap.
-- Verified: `test-access-control.js` — all 9 tests pass.
+### O4. `user_list`/`user_joined` handlers `await Promise.all` over trust checks before rendering
+`public/client.js:891-897`
+Correct (prevents a "trusted → warning" flicker). If a contact's IndexedDB read is slow this serializes the whole list render; acceptable for ≤20 users.
 
-### 2026-07-22 — Fix #10 (Medium): replay cache for signed payloads
-- Added a per-socket replay cache (`replayCache: Map<socketId, Set<signature>>`) that tracks verified signatures for the duration of the timestamp skew window.
-- Three handlers now check `isReplay()` after signature verification passes and call `rememberSignature()` before relaying: `message`, `file_offer`, and `file_answer`.
-- A replayed payload (same `(socketId, signature)`) is dropped silently. A new unique message with a fresh timestamp/signature passes normally.
-- Cache is scoped per socket id so disconnect cleanup is automatic — `forgetReplayCache(socket.id)` is called in the `disconnect` handler.
-- Bounded by the per-socket message rate limit (15/10s → at most ~450 entries per socket in the 5-minute window, in practice far fewer).
-- Wrote `test-replay-cache.js` to verify: (1) first send is received, (2) replayed message is dropped, (3) a subsequent unique message still passes. All 3 tests pass.
-- Verified: `test-access-control.js` — all 9 tests still pass.
+### O5. The `createLimiter` fixed-window counter resets the window on first call *after* the boundary
+`server.js:340-352`
+Documented. A burst at the boundary allows ~2x in a brief window. At these limits (message 15/10s) it is harmless. If you want exactness, a token bucket (or `express-rate-limit`'s sliding window) is a drop-in, but the comment correctly judges the tradeoff. No change.
 
-### 2026-07-25 — Fix O4 (Optimization): nick uniqueness check is now O(1)
-- Replaced the `Array.from(users.values()).some(u => u.nick === nick)` scan in the `join` handler with a `nicksInUse.has(nick)` lookup against a new `Set` maintained alongside the `users` Map.
-- `nicksInUse.add(nick)` on successful join (right after `users.set`); `nicksInUse.delete(leavingUser.nick)` on disconnect (guarded by `if (leavingUser)` to match the optional-chaining already used in the `user_left` emit). There is only one `users.delete` site in the file, so the mirror cannot drift.
-- Behavior preserved: a taken nick still emits `nick_taken`; the check now runs in O(1) instead of O(n), which matters only if `MAX_USERS` is raised but is strictly better regardless.
-- Verified: `test-access-control.js` (9/9) and `test-replay-cache.js` (3/3) pass. Note: had to `npm install` (deps were missing from the checkout) and `npm install socket.io-client` (it was not pulled in by the initial install despite being in `dependencies`) before the socket-dependent tests could run — pre-existing environment gap, not introduced by this change.
+### O6. `callSessions` cleanup on disconnect iterates all sessions
+`server.js:167-173`
+Bounded by `MAX_GROUP_SIZE = 4` per socket. Fine.
+
+---
+
+## Summary table
+
+| ID | Severity | Area | One-liner |
+|----|----------|------|-----------|
+| C1 | Critical (✅ fixed) | `server.js:530,660` | `socket.to().emit` sends to nobody; now uses `socket.broadcast.emit` |
+| H1 | High | `server.js:202` | Replay cache is per-socket; key on identity fingerprint |
+| H2 | High | `server.js:19-26` | Add explicit `frame-ancestors 'none'` to CSP |
+| H3 | High | `client.js:331` | Validate imported peer RSA key is ≥2048 bits |
+| M1 | Medium | `server.js:572` | `timestamp` accepts `NaN`; use `Number.isFinite` |
+| M2 | Medium | `client.js:3522,3322` | Harden receiver-side `name`/`mimeType` for file transfers |
+| M3 | Medium | `server.js:100` | Warn when `ALLOWED_ORIGIN` set but `TRUST_PROXY` unset |
+| M4 | Medium | `server.js:104` | Set `maxHttpBufferSize`, `pingInterval`, `pingTimeout` |
+| M5 | Medium | `server.js:38` | `express.json()` is unused; remove or set `limit` |
+| M6 | Medium | `server.js:75` | TURN username is the public socket id; add randomness |
+| L1–L8 | Low | various | HSTS guidance, nick-binding eviction, dev-deps cleanup, etc. |
+| O1–O6 | Opt | various | Documented/bounded; optional `DocumentFragment` render, etc. |
+
+---
+
+## What's done well (so it isn't "fixed" away)
+
+- **E2EE of messages and signaling**: RSA-OAEP/AES-GCM hybrid, signatures over ciphertext, verify-before-decrypt (`client.js:1644-1656`).
+- **Identity proof-of-possession at join** with a single-use nonce binding the session key to the long-term identity (`server.js:440-477`, `client.js:642-653`).
+- **TOFU pinning + explicit verification** with a "blocked until resolved" path on key change (`client.js:250-277`, `client.js:317-323`, `client.js:1146-1176`).
+- **Defense-in-depth signature verification** on both server and client, where the client's pin is the actual trust anchor.
+- **Constant-time room password** comparison with scrypt (`server.js:319-324`).
+- **All untrusted content rendered via `textContent`** — no `innerHTML` interpolation of nicks/abouts/messages (verified across `client.js`). No XSS sink found in the message/call-log/file paths.
+- **Per-socket, per-event rate limits** with escalating strikes → disconnect (`server.js:410-438`).
+- **TURN credentials gated behind joined sockets** and never exposed to the unauthenticated REST endpoint (`server.js:89-91`, `server.js:542-551`).
+- **Nonce/HMAC TURN credential** derivation, short-lived (`server.js:75-83`).
+- **`.env` gitignored**, empty in the repo.
