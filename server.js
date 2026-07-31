@@ -656,7 +656,7 @@ io.on('connection', (socket) => {
         // longer fabricate a message and attribute it to someone else: it
         // never holds anyone's identity private key, so it can't produce a
         // signature that passes verification here either.
-        if (!isValidBlob(content, MAX_MESSAGE_BLOB) || !isValidBlob(signature, MAX_SIG_BLOB) || typeof timestamp !== 'number') {
+        if (!isValidBlob(content, MAX_MESSAGE_BLOB) || !isValidBlob(signature, MAX_SIG_BLOB) || !Number.isFinite(timestamp)) {
             return; // malformed - drop silently, same treatment as other bad payloads
         }
         if (Math.abs(Date.now() - timestamp) > MESSAGE_TIMESTAMP_SKEW_MS) {
@@ -964,7 +964,7 @@ socket.on('file_offer', ({ recipientId, transferId, offer, timestamp, signature 
     const sender = users.get(socket.id);
     if (!sender || !users.has(recipientId)) return;
     if (!isValidBlob(transferId, MAX_TRANSFER_ID) || !isValidBlob(offer, MAX_SDP_BLOB)) return;
-    if (!isValidBlob(signature, MAX_SIG_BLOB) || typeof timestamp !== 'number') return;
+    if (!isValidBlob(signature, MAX_SIG_BLOB) || !Number.isFinite(timestamp)) return;
     if (Math.abs(Date.now() - timestamp) > MESSAGE_TIMESTAMP_SKEW_MS) return;
     if (!verifyStringSignature(sender.identityKey, `${timestamp}:${offer}`, signature)) return;
     if (isReplay(sender.fingerprint, signature)) return;
@@ -978,7 +978,7 @@ socket.on('file_answer', ({ recipientId, transferId, answer, timestamp, signatur
     const sender = users.get(socket.id);
     if (!sender || !users.has(recipientId)) return;
     if (!isValidBlob(transferId, MAX_TRANSFER_ID) || !isValidBlob(answer, MAX_SDP_BLOB)) return;
-    if (!isValidBlob(signature, MAX_SIG_BLOB) || typeof timestamp !== 'number') return;
+    if (!isValidBlob(signature, MAX_SIG_BLOB) || !Number.isFinite(timestamp)) return;
     if (Math.abs(Date.now() - timestamp) > MESSAGE_TIMESTAMP_SKEW_MS) return;
     if (!verifyStringSignature(sender.identityKey, `${timestamp}:${answer}`, signature)) return;
     if (isReplay(sender.fingerprint, signature)) return;

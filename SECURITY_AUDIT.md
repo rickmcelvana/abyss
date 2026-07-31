@@ -120,7 +120,7 @@ No protocol change. A client that was somehow generating a <2048-bit RSA session
 
 ## Medium
 
-### M1. `typeof timestamp !== 'number'` accepts `Infinity`, `NaN`, and very large numbers
+### M1. `typeof timestamp !== 'number'` accepts `Infinity`, `NaN`, and very large numbers  ✅ FIXED
 `server.js:572-575`, `server.js:872-873`, `server.js:886-887`
 
 The check is `typeof timestamp !== 'number'` followed by `Math.abs(Date.now() - timestamp) > SKEW`. `Infinity`/`NaN`:
@@ -128,6 +128,17 @@ The check is `typeof timestamp !== 'number'` followed by `Math.abs(Date.now() - 
 - `Math.abs(Date.now() - Infinity)` → `Infinity`; `Infinity > SKEW` is `true` → rejected. OK.
 
 **Fix:** tighten to `Number.isFinite(timestamp)`.
+
+**Resolution (applied in this change):** Replaced `typeof timestamp !== 'number'` with `!Number.isFinite(timestamp)` at all three call sites (the `message` handler and the `file_offer`/`file_answer` handlers). `Number.isFinite` is strictly tighter than the `typeof` check: it returns `false` for `NaN`, `Infinity`, `-Infinity` (which `typeof 'number'` admits) *and* for non-number values (strings, `null`, `undefined`, booleans) which `typeof` already rejected — so no previously-valid payload is newly dropped, and the `NaN`-through-the-skew-check hole is closed. Verified the truth table: `Number.isFinite(NaN/Infinity/-Infinity/'now'/null/undefined) === false`, `Number.isFinite(Date.now()) === true`.
+
+No change to the skew check itself (`Math.abs(Date.now() - timestamp) > MESSAGE_TIMESTAMP_SKEW_MS`) — it remains the second line of defense for out-of-range but finite timestamps.
+
+Verification:
+- `node test-replay-cache.js` — added a regression block that signs and sends messages with `NaN`, `Infinity`, and `-Infinity` timestamps (each with a valid identity signature, so only the timestamp check can drop them) and asserts none increment the receiver's count. All 7 checks pass (the existing 6 + the new one).
+- `node test-access-control.js` — 9/9 pass; legitimate messages with real `Date.now()` timestamps still flow.
+- `node test-rsa-key-strength.js`, `node test-identity-crypto.js`, `node test-turn-hmac.js` — unaffected, pass.
+
+No protocol change. A conforming client always sends `Date.now()` (a finite integer), so no legitimate message is affected.
 
 ### M2. `isValidBlob` checks length but not content; signaling blobs are relayed verbatim to other peers
 `server.js:178-180`, relay at `server.js:820-823`, `server.js:839`, `server.js:848`, `server.js:878`, `server.js:892`, `server.js:900`
@@ -246,7 +257,7 @@ Bounded by `MAX_GROUP_SIZE = 4` per socket. Fine.
 | H1 | High (✅ fixed) | `server.js:202` | Replay cache now keyed on identity fingerprint (was per-socket) |
 | H2 | High (✅ fixed) | `server.js:19-26` | Added explicit `frame-ancestors 'none'` to CSP (was helmet's `'self'`) |
 | H3 | High (✅ fixed) | `client.js:331`, `server.js` join | Server rejects <RSA-2048 session keys at join; client throws on import |
-| M1 | Medium | `server.js:572` | `timestamp` accepts `NaN`; use `Number.isFinite` |
+| M1 | Medium (✅ fixed) | `server.js:572` | `timestamp` now checked with `Number.isFinite` (rejects NaN/±Infinity) |
 | M2 | Medium | `client.js:3522,3322` | Harden receiver-side `name`/`mimeType` for file transfers |
 | M3 | Medium | `server.js:100` | Warn when `ALLOWED_ORIGIN` set but `TRUST_PROXY` unset |
 | M4 | Medium | `server.js:104` | Set `maxHttpBufferSize`, `pingInterval`, `pingTimeout` |

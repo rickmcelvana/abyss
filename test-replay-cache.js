@@ -111,6 +111,20 @@ function check(label, cond) {
         await wait(500);
         check("second unique message was received", recvCount === 2);
 
+        // --- Non-finite timestamp rejection (M1) ---
+        // typeof timestamp !== 'number' used to let NaN through (NaN > SKEW
+        // is false), so a signed "NaN:<content>" reached recipients. Now
+        // Number.isFinite(timestamp) rejects NaN, Infinity, -Infinity. Each
+        // of these is signed with a valid identity signature, so the only
+        // thing that should drop them is the timestamp check - none should
+        // increment recvCount.
+        for (const bad of [NaN, Infinity, -Infinity]) {
+            const sig = await signString(sender.identity.privateKey, `${bad}:m1-msg`);
+            sender.emit("message", { content: "m1-msg", isPrivate: false, timestamp: bad, signature: sig });
+        }
+        await wait(500);
+        check("non-finite timestamps (NaN, Infinity, -Infinity) were all rejected", recvCount === 2);
+
         sender.disconnect();
         receiver.disconnect();
 
