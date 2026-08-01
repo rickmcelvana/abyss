@@ -259,8 +259,8 @@ button:hover {
     transform: none;
     box-shadow: none;
 }
-.user-open-btn strong { width: 100%; display: block; }
-.user-open-btn small { display: block; }
+.user-item strong { width: 100%; display: block; }
+.user-item small { display: block; }
 
 .user-item .call-btn {
     margin-left: auto;
