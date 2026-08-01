@@ -41,7 +41,7 @@ Require `puppeteer-core` and Chrome. The `CHROME` constant at the top of each fi
 ## Gotchas
 
 - No lint, no formatter, no typecheck commands exist.
-- `puppeteer-core` and `socket.io-client` are in `dependencies` (not `devDependencies`) — only needed for tests.
+- `puppeteer-core` and `socket.io-client` are in `devDependencies` (not `dependencies`) — only the test suite needs them. A production install (`npm install --omit=dev`) excludes both; a full `npm install` pulls them so the tests work.
 - Express v5 is used (not v4) — routing and middleware APIs differ.
 - Nicknames are capped at 15 characters server-side (`server.js`).
 - Room password and per-IP cap are env-var driven, not config-file driven.

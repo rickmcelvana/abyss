@@ -104,7 +104,7 @@ RING_TIMEOUT_MS=3000 MAX_CONNECTIONS_PER_IP=20 npm start   # in one terminal
 RING_TIMEOUT_MS=3000 node test-calls.js                    # in another
 ```
 
-The browser tests launch Chrome via `puppeteer-core` and expect a Chrome binary at a hardcoded path (see `CHROME` at the top of each file) — update that path if yours differs, or point it at a system Chrome/Chromium install. `puppeteer-core` and `socket.io-client` are currently listed as regular `dependencies` in `package.json` even though only the test suite needs them; if you're trimming a production install, they (along with the `test-*.js` files) can be left out.
+The browser tests launch Chrome via `puppeteer-core` and expect a Chrome binary at a hardcoded path (see `CHROME` at the top of each file) — update that path if yours differs, or point it at a system Chrome/Chromium install. `puppeteer-core` and `socket.io-client` are listed in `devDependencies`; a production install (`npm install --omit=dev`) excludes them, while a full `npm install` pulls them so the test suite works.
 
 ## Project structure
 

@@ -297,8 +297,24 @@ Correct fail-closed behavior. No change needed; noted for clarity.
 ### L7. `.env` is gitignored (verified) — good. The committed `.env` is empty.
 No secret leakage in the repo.
 
-### L8. `puppeteer-core` and `socket.io-client` are in `dependencies` not `devDependencies`
-`package.json:13-20`. Documented in AGENTS.md as intentional-ish ("only needed for tests"). For a production install (`npm install --omit=dev`) these ship anyway. Move to `devDependencies` to slim the production footprint and reduce attack surface from test-only packages in prod. (AGENTS.md already flags this; restating as an optimization.)
+### L8. `puppeteer-core` and `socket.io-client` are in `dependencies` not `devDependencies`  ✅ FIXED
+`package.json:13-20`. Documented in AGENTS.md as intentional-ish ("only needed for tests"). For a production install (`npm install --omit=dev`) these shipped anyway. Move to `devDependencies` to slim the production footprint and reduce attack surface from test-only packages in prod. (AGENTS.md already flags this; restating as an optimization.)
+
+**Resolution (applied in this change):** Moved both test-only packages to a new `devDependencies` block in `package.json` and regenerated `package-lock.json` accordingly (`npm install --package-lock-only` then a real `npm install` to sync `node_modules`).
+
+- **`socket.io-client`** — moved `^4.8.3` from `dependencies` to `devDependencies`. Used only by the server-side test harnesses (`test-access-control.js`, `test-calls.js`, `test-replay-cache.js`, `test-nick-binding-eviction.js`). The server itself uses the server-side `socket.io` package, not the client.
+- **`puppeteer-core`** — the audit's premise was partially stale: `puppeteer-core` was *not* in `package.json` at audit time (it was never declared, yet the 12 `test-*-e2e.js` files `require("puppeteer-core")` — they only worked because someone had run `npm i puppeteer-core` manually, so a fresh clone + `npm install` would fail the e2e suite). Added `puppeteer-core: "^24.0.0"` to `devDependencies` so the e2e tests' `require` actually resolves from a clean install. `puppeteer-core` is version-agnostic (it drives whatever Chrome binary you point it at via `executablePath`), and the API the e2e tests use (`launch`, `newPage`, `$eval`, `$$eval`, `evaluate`, `close`) is stable across all puppeteer-core majors, so `^24` works with the Chrome 131 the tests' `CHROME` constant points at. Pinned to `^24` rather than `^25` so the lockfile resolves to a long-stable major; bump freely when updating the hardcoded `CHROME` path.
+
+Effect: a production install (`npm install --omit=dev`, or `npm install --production`) now excludes both packages and their transitive deps, slimming the production footprint (72 packages added to `node_modules` for dev only) and removing two test-only packages from the production attack surface. Verified with `npm ls --omit=dev --all` — neither `puppeteer-core` nor `socket.io-client` appears in the production tree; a full `npm install` still pulls both so the test suites keep working.
+
+Verification:
+- `npm install` — clean install succeeds; `node_modules/puppeteer-core` and `node_modules/socket.io-client` both present.
+- `node -e "require('puppeteer-core'); require('socket.io-client')"` — both resolvable.
+- `npm ls --omit=dev --all` — neither package (nor their transitive deps) appears in the production tree.
+- `node test-access-control.js` (9/9), `node test-replay-cache.js` (7/7), `node test-nick-binding-eviction.js` (11/11), `node test-turn-hmac.js` (10/10), `node test-identity-crypto.js` (7/7), `node test-rsa-key-strength.js` (7/7), `node test-file-sanitize.js` (25/25) — all still pass; `socket.io-client` is installed and resolvable for the test harnesses.
+- The `test-*-e2e.js` files now resolve `puppeteer-core` from a clean install (previously they'd `MODULE_NOT_FOUND` on a fresh clone without a manual `npm i puppeteer-core`).
+
+No code change, no protocol change, no migration. Only `package.json` and `package-lock.json` changed.
 
 ---
 
@@ -345,7 +361,8 @@ Bounded by `MAX_GROUP_SIZE = 4` per socket. Fine.
 | M5 | Medium (✅ fixed) | `server.js:38` | Removed dead `express.json()` middleware (only GET route, no body) |
 | M6 | Medium (✅ fixed) | `server.js:75` | TURN username now `<expiry>:<socket.id>:<128-bit random>` - unobservable from signaling |
 | L3 | Low (✅ fixed) | `server.js:627` | nickBindings FIFO eviction now skips nicks currently in `nicksInUse` (no takeover via churn flood) |
-| L1,L2,L4–L8 | Low | various | HSTS guidance, dev-deps cleanup, etc. |
+| L8 | Low (✅ fixed) | `package.json` | `socket.io-client` moved to devDependencies; `puppeteer-core` added to devDependencies (was undeclared) |
+| L1,L2,L4–L7 | Low | various | HSTS guidance, dev-deps cleanup, etc. |
 | O1–O6 | Opt | various | Documented/bounded; optional `DocumentFragment` render, etc. |
 
 ---
