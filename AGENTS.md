@@ -49,4 +49,4 @@ Require `puppeteer-core` and Chrome. The `CHROME` constant at the top of each fi
 - Socket.IO and Express CORS default to `origin: "*"` (open, for local dev). Set `ALLOWED_ORIGIN=https://your.domain` in production to restrict cross-origin access.
 - Per-IP connection cap reads `socket.handshake.address`. Behind a reverse proxy (nginx, cloudflared), set `TRUST_PROXY=1` so it honors `X-Forwarded-For`; otherwise every connection appears to come from the proxy's IP.
 - Connection-rate limiting (`MAX_CONNECT_RATE_PER_IP`, `CONNECT_RATE_WINDOW_MS`) is enforced via Socket.IO `io.use()` middleware before the `connection` handler.
-- `nickBindings` is capped at 1000 entries (FIFO eviction) to bound memory in long-lived processes with high nick churn.
+- `nickBindings` is capped at `MAX_NICK_BINDINGS` entries (default 1000, env-var configurable). FIFO eviction, but it skips any nick currently in use (`nicksInUse`) so a live user's nick binding can never be freed by churn — a churn-flood attack cannot push a target's binding out and then steal the nick.

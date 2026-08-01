@@ -265,12 +265,23 @@ Intended for a TLS-terminating proxy in front. HSTS must be set by the proxy (or
 `server.js:388`, `server.js:450`, `server.js:661`
 Acceptable for a local dev server. In a multi-tenant/proxy deployment these logs could correlate nicks to IPs (behind the proxy). Ensure the deployment guide notes log retention.
 
-### L3. `MAX_NICK_BINDINGS = 1000` FIFO eviction can free a *used* nick's binding, allowing takeover
-`server.js:292`, `server.js:508-511`
+### L3. `MAX_NICK_BINDINGS = 1000` FIFO eviction can free a *used* nick's binding, allowing takeover  ✅ FIXED
+`server.js:390-391`, `server.js:627-634`
 
-When the map reaches 1000 entries, the oldest binding is evicted. If that oldest entry is a nick that is currently *in use* by an active user, eviction removes the nick→fingerprint binding, after which a different identity could claim that nick on join. With only 20 concurrent users this is very unlikely to be hit organically, but a churn-flood attack (rapid joins under many nicks, within the per-IP cap) could push a target's binding out and then steal the nick.
+When the map reached 1000 entries, the oldest binding was evicted unconditionally. If that oldest entry was a nick currently *in use* by an active user, eviction removed the nick→fingerprint binding, after which a different identity could claim that nick on join. With only 20 concurrent users this is very unlikely to be hit organically, but a churn-flood attack (rapid joins under many nicks, within the per-IP cap) could push a target's binding out and then steal the nick.
 
 **Fix:** never evict a binding for a nick that is currently in `nicksInUse`. On eviction, skip entries whose nick is in `nicksInUse`.
+
+**Resolution (applied in this change):** The eviction block in the `join` handler now walks `nickBindings.keys()` in insertion order and skips any candidate whose nick is currently in `nicksInUse`, deleting the first not-in-use entry it finds and breaking. This guarantees that a binding for an active user's nick is never freed, so a churn-flood attack cannot push a target user's binding out and then steal the nick — exactly the fix the audit proposed. The cap still bounds memory in pathological churn because `nicksInUse` is itself bounded by `MAX_USERS` (20), so at most 20 in-use bindings are un-evictable at any time; the remaining evictable entries (nicks whose sockets have disconnected) keep the map from growing without bound. Walking the map is O(n) in the worst case, but the map is capped at 1000 and the eviction path only fires on the single join that pushes past the cap, so the amortized cost is negligible.
+
+`MAX_NICK_BINDINGS` is now overridable via env var (`MAX_NICK_BINDINGS=<n>`, default 1000), matching the existing pattern for `MAX_CONNECTIONS_PER_IP` / `MAX_CONNECT_RATE_PER_IP`, so the regression test can exercise the eviction path with a tiny cap instead of needing to mint 1000 joins.
+
+Verification:
+- New `node test-nick-binding-eviction.js` — 11/11 checks: runs an isolated server with `MAX_NICK_BINDINGS=5` and generous per-IP caps. A "target" user joins and stays connected (its nick is in `nicksInUse` for the whole test), then 6 churn nicks join-and-disconnect to exceed the cap. The test asserts (a) a different identity cannot claim the in-use "target" nick (binding survived eviction), (b) an evicted churn nick CAN be re-claimed by a new identity (proving eviction actually happened, not just disabled), and (c) the original "target" identity re-joining its own nick is blocked only by `nick_taken` (still connected), not by a binding-mismatch error (binding intact, not corrupted). Temporarily reverting the fix to the old single-oldest eviction makes Test 3 fail, confirming the test actually catches the regression.
+- `node test-access-control.js` — all 9 tests pass; the env-var-configurable cap and the new eviction walk don't affect join/disconnect/rate-limit/cap behavior at the default 1000.
+- `node test-replay-cache.js` (7/7), `node test-turn-hmac.js` (10/10), `node test-identity-crypto.js` (7/7), `node test-rsa-key-strength.js` (7/7), `node test-file-sanitize.js` (25/25) — unaffected, pass.
+
+No protocol change, no client change, no migration. The eviction policy is an internal server-side bookkeeping detail; clients only observe that a live user's nick can no longer be stolen.
 
 ### L4. Identity fingerprint truncated to 16 bytes (128 bits) for display — fine — but the *binding* key is the full SHA-256
 `server.js:271-273` (full hash) vs `client.js:239` (16-byte display)
@@ -333,7 +344,8 @@ Bounded by `MAX_GROUP_SIZE = 4` per socket. Fine.
 | M4 | Medium (✅ fixed) | `server.js:104` | Set `maxHttpBufferSize` 256 KB, `pingInterval` 10s, `pingTimeout` 20s |
 | M5 | Medium (✅ fixed) | `server.js:38` | Removed dead `express.json()` middleware (only GET route, no body) |
 | M6 | Medium (✅ fixed) | `server.js:75` | TURN username now `<expiry>:<socket.id>:<128-bit random>` - unobservable from signaling |
-| L1–L8 | Low | various | HSTS guidance, nick-binding eviction, dev-deps cleanup, etc. |
+| L3 | Low (✅ fixed) | `server.js:627` | nickBindings FIFO eviction now skips nicks currently in `nicksInUse` (no takeover via churn flood) |
+| L1,L2,L4–L8 | Low | various | HSTS guidance, dev-deps cleanup, etc. |
 | O1–O6 | Opt | various | Documented/bounded; optional `DocumentFragment` render, etc. |
 
 ---

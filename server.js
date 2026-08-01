@@ -387,7 +387,7 @@ function isAcceptableRsaPublicKey(publicKeyB64) {
 // - in practice the map never grows past the number of distinct nicks
 // that have ever joined, but a hard ceiling protects against pathological
 // cases. When the cap is reached, the oldest entries are evicted (FIFO).
-const MAX_NICK_BINDINGS = 1000;
+const MAX_NICK_BINDINGS = parseInt(process.env.MAX_NICK_BINDINGS, 10) || 1000;
 const nickBindings = new Map(); // nick -> identity fingerprint (insertion-ordered)
 
 // --- Phase 8: access control & abuse hardening ---
@@ -614,9 +614,23 @@ io.on('connection', (socket) => {
         // insertion-ordered, so the first key is the oldest. Only evicts when
         // this set actually grew the map (reconnecting with the same nick
         // just overwrites the existing entry without changing its size).
+        // Never evict a binding for a nick that is currently in use by an
+        // active user (nicksInUse): freeing such a binding would let another
+        // identity claim that nick on the next join (a takeover). Skip in-use
+        // entries and keep walking the insertion order until an evictable
+        // (not in use) entry is found. This guarantees that a binding for an
+        // active user's nick is never freed, so a churn-flood attack (rapid
+        // joins under many nicks, within the per-IP cap) cannot push a target
+        // user's binding out and then steal the nick. The cap still bounds
+        // memory in pathological churn since nicksInUse is itself bounded by
+        // MAX_USERS (20).
         if (nickBindings.size > MAX_NICK_BINDINGS) {
-            const oldest = nickBindings.keys().next().value;
-            nickBindings.delete(oldest);
+            for (const candidate of nickBindings.keys()) {
+                if (!nicksInUse.has(candidate)) {
+                    nickBindings.delete(candidate);
+                    break;
+                }
+            }
         }
 
         const userEntry = {
